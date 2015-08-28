@@ -1,0 +1,38 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>org.adejanovski.cassandra.policies</groupId>
+  <artifactId>dcaware-failover-policy</artifactId>
+  <version>2.1.8-SNAPSHOT</version>
+  <packaging>jar</packaging>
+
+  <name>DCAwareFailoverRoundRobinPolicy</name>
+  <url>http://maven.apache.org</url>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+
+  <dependencies>
+  	<dependency>
+			<groupId>org.stuartgunter</groupId>
+			<artifactId>dropwizard-cassandra</artifactId>
+			<version>1.1-dw0.8-cs2.1</version>
+	</dependency>
+    <dependency>
+      <groupId>junit</groupId>
+      <artifactId>junit</artifactId>
+      <version>3.8.1</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+  
+  <build>
+	  <resources>
+	     <resource>
+	       <directory>META-INF/services</directory>
+	     </resource>
+	   </resources>
+   </build>
+</project>
