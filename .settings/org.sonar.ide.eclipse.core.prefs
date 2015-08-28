@@ -1,5 +1,0 @@
-eclipse.preferences.version=1
-extraProperties=sonar.host.url\=http\://lyn4e102.tlt\:9000/sonar/\r\nsonar.jdbc.password\=sonar\r\nsonar.jdbc.username\=sonar\r\nsonar.jdbc.url\=jdbc\:postgresql\://lyn4e102.tlt\:5432/sonar\r\nsonar.jdbc.driverClassName\=org.postgresql.Driver
-projectKey=org.adejanovski.cassandra.policies\:dcaware-failover-policy
-serverUrl=http\://localhost\:9000
-version=2
