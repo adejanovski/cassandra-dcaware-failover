@@ -16,7 +16,7 @@ Handling those failure scenarios has to be implemented in client applications, b
 * Switching automatically back to the local DC must be prevented because repair might be necessary in order to regain consistency
  
  
-The DCAwareFailoverRoundRobinPolicy is based on the DCAwareRoundRobinPolicy, but takes the following parameters : 
+The DCAwareFailoverRoundRobinPolicy is based on the DCAwareRoundRobinPolicy and handles the above one way switch without having to code it. It takes the following parameters : 
 * localDc : the primary DC of the app
 * backupDc : the DC to switch to in case the primary DC loses a defined number of nodes
 * hostDownSwitchThreshold : the number of lost nodes that will trigger the switch
