@@ -78,15 +78,59 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	@VisibleForTesting
 	volatile String backupDc;
 
+	/**
+	 * Current value of the switch threshold. if {@code hostDownSwitchThreshold} <= 0 then we must switch.
+	 */
 	private int hostDownSwitchThreshold;
+	
+	/**
+	 * Initial value of the switch threshold
+	 */
 	private final int initHostDownSwitchThreshold;
-	volatile boolean switchedToBackupDc = false;
+	
+	/**
+	 * flag to test if the switch as occurred
+	 */
+	private boolean switchedToBackupDc = false;
+	
+	/**
+	 * Time at which the switch occurred 
+	 */
+	private Date switchedToBackupDcAt; 	
+	
+	/**
+	 * Automatically switching back to local DC is possible after : downtime*{@code switchBackDelayFactor} 
+	 */
+	private Float switchBackDelayFactor;
+	
+	/**
+	 * Downtime delay after which switching back cannot be automated (usually when hinted handoff window is reached)
+	 * In seconds.  
+	 */
+	private int noSwitchBackDowntimeDelay;
 
 	private final int usedHostsPerRemoteDc;
 	private final boolean dontHopForLocalCL;
-
+	
+	
 	private volatile Configuration configuration;
 
+	/**
+	 * Creates a new datacenter aware failover round robin policy that uses a
+	 * local data-center and a backup data-center.
+	 * Switching to the backup DC is triggered automatically if local DC loses
+	 * more than {@code hostDownSwitchThreshold} nodes.
+	 * Switching back to local DC after going to backup will never happen automatically.
+	 * <p> 
+	 */
+
+	public DCAwareFailoverRoundRobinPolicy(String localDc, String backupDc,
+			int hostDownSwitchThreshold) {
+		
+		this(localDc, backupDc, hostDownSwitchThreshold, (float) -1.0, 0);
+		
+	}
+	
 	/**
 	 * Creates a new datacenter aware failover round robin policy that uses a
 	 * local data-center and a backup data-center.
@@ -96,14 +140,18 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	 */
 
 	public DCAwareFailoverRoundRobinPolicy(String localDc, String backupDc,
-			int hostDownSwitchThreshold) {
+			int hostDownSwitchThreshold, float switchBackDelayFactor, int noSwitchBackDowntimeDelay) {
 		this.localDc = localDc == null ? UNSET : localDc;
 		this.backupDc = backupDc == null ? UNSET : backupDc;
 		this.usedHostsPerRemoteDc = 0;
 		this.dontHopForLocalCL = true;
 		this.hostDownSwitchThreshold = hostDownSwitchThreshold;
 		this.initHostDownSwitchThreshold = hostDownSwitchThreshold;
+		this.switchBackDelayFactor = switchBackDelayFactor;
+		this.noSwitchBackDowntimeDelay = noSwitchBackDowntimeDelay;
+		
 	}
+
 
 	public void init(Cluster cluster, Collection<Host> hosts) {
 		if (localDc != UNSET)
@@ -178,11 +226,11 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 		String dc = dc(host);
 		if (dc == UNSET || (dc.equals(localDc) && !switchedToBackupDc)
 				|| (dc.equals(backupDc) && switchedToBackupDc)) {
-			logger.info("node {} is in LOCAL", host.getAddress().toString());
+			logger.debug("node {} is in LOCAL", host.getAddress().toString());
 			return HostDistance.LOCAL;
 		}
 
-		logger.info("node {} is REMOTE", host.getAddress().toString());
+		logger.debug("node {} is REMOTE", host.getAddress().toString());
 
 		CopyOnWriteArrayList<Host> dcHosts = perDcLiveHosts.get(dc);
 		if (dcHosts == null || usedHostsPerRemoteDc == 0)
@@ -295,7 +343,7 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 
 		if (dc.equals(localDc)
 				&& this.hostDownSwitchThreshold < this.initHostDownSwitchThreshold
-				&& !switchedToBackupDc) {
+				) {
 			// if a node comes backup in the local DC and we're not already
 			// equal to the initial threshold, add one node to the one way
 			// switch threshold
@@ -340,11 +388,7 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 		if (this.hostDownSwitchThreshold <= 0 && !switchedToBackupDc) {
 			// if we lost as many nodes in the local dc as configured in the
 			// threshold, switch to backup DC and never go back to local DC
-			switchedToBackupDc = true;
-			logger.warn(
-					"Lost {} nodes in data-center '{}'. Permanently switching to data-center '{}'",
-					this.initHostDownSwitchThreshold, this.localDc,
-					this.backupDc);
+			switchToBackup();
 
 		}
 	}
@@ -359,5 +403,15 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 
 	public void close() {
 		// nothing to do
+	}
+	
+	private void switchToBackup(){
+		switchedToBackupDc = true;
+		switchedToBackupDcAt = new Date();
+		logger.warn(
+				"Lost {} nodes in data-center '{}'. Permanently switching to data-center '{}'",
+				this.initHostDownSwitchThreshold, this.localDc,
+				this.backupDc);
+		
 	}
 }
