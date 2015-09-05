@@ -117,7 +117,7 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 		for (Host host : hosts) {
 			String dc = dc(host);
 
-			logger.info("node {} is in dc {}", host.getAddress().toString(), dc);
+			logger.debug("node {} is in dc {}", host.getAddress().toString(), dc);
 			// If the localDC was in "auto-discover" mode and it's the first
 			// host for which we have a DC, use it.
 			if (localDc == UNSET && dc != UNSET) {
@@ -177,11 +177,11 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 		String dc = dc(host);
 		if (dc == UNSET || (dc.equals(localDc) && !switchedToBackupDc)
 				|| (dc.equals(backupDc) && switchedToBackupDc)) {
-			logger.info("node {} is in LOCAL", host.getAddress().toString());
+			logger.debug("node {} is in LOCAL", host.getAddress().toString());
 			return HostDistance.LOCAL;
 		}
 
-		logger.info("node {} is REMOTE", host.getAddress().toString());
+		logger.debug("node {} is in REMOTE", host.getAddress().toString());
 
 		CopyOnWriteArrayList<Host> dcHosts = perDcLiveHosts.get(dc);
 		if (dcHosts == null || usedHostsPerRemoteDc == 0)
