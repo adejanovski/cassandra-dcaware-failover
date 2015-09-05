@@ -4,7 +4,7 @@
 
 	<groupId>org.adejanovski.cassandra.policies</groupId>
 	<artifactId>dcaware-failover-policy</artifactId>
-	<version>0.1.1-SNAPSHOT</version>
+	<version>0.1</version>
 	<packaging>jar</packaging>
 
 	<name>DCAwareFailoverRoundRobinPolicy</name>

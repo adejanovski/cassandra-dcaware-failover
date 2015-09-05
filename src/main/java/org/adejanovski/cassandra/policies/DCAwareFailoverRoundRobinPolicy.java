@@ -1,5 +1,4 @@
 /*
- *      Copyright (C) 2012-2015 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -166,7 +165,7 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 		for (Host host : hosts) {
 			String dc = dc(host);
 
-			logger.info("node {} is in dc {}", host.getAddress().toString(), dc);
+			logger.debug("node {} is in dc {}", host.getAddress().toString(), dc);
 			// If the localDC was in "auto-discover" mode and it's the first
 			// host for which we have a DC, use it.
 			if (localDc == UNSET && dc != UNSET) {
@@ -230,7 +229,7 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 			return HostDistance.LOCAL;
 		}
 
-		logger.debug("node {} is REMOTE", host.getAddress().toString());
+		logger.debug("node {} is in REMOTE", host.getAddress().toString());
 
 		CopyOnWriteArrayList<Host> dcHosts = perDcLiveHosts.get(dc);
 		if (dcHosts == null || usedHostsPerRemoteDc == 0)
