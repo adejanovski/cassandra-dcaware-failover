@@ -4,7 +4,7 @@
 
 	<groupId>org.adejanovski.cassandra.policies</groupId>
 	<artifactId>dcaware-failover-policy</artifactId>
-	<version>0.1</version>
+	<version>0.2</version>
 	<packaging>jar</packaging>
 
 	<name>DCAwareFailoverRoundRobinPolicy</name>
@@ -14,11 +14,23 @@
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 	</properties>
 
-	<dependencies>
+<dependencies>
+		<dependency>
+			<groupId>com.datastax.cassandra</groupId>
+			<artifactId>cassandra-driver-core</artifactId>
+			<version>2.1.7.1</version>
+		</dependency>
+
 		<dependency>
 			<groupId>org.stuartgunter</groupId>
 			<artifactId>dropwizard-cassandra</artifactId>
 			<version>1.1-dw0.8-cs2.1</version>
+			<exclusions>
+				<exclusion>
+					<groupId>com.datastax.cassandra</groupId>
+					<artifactId>cassandra-driver-core</artifactId>
+				</exclusion>
+			</exclusions>
 		</dependency>
 
 		<dependency>

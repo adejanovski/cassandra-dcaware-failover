@@ -30,6 +30,16 @@ import com.datastax.driver.core.policies.LoadBalancingPolicy;
  * <td>No default.</td>
  * <td>The name of the backup datacenter (as known by Cassandra).</td>
  * </tr>
+ * <tr>
+ * <td>switchBackDelayFactor</td>
+ * <td>0</td>
+ * <td>The connection can switch back if uptime >= downtime*switchBackDelayFactor (gives time for hinted handoff to complete)</td>
+ * </tr>
+ * <tr>
+ * <td>noSwitchBackDowntimeDelay</td>
+ * <td>0</td>
+ * <td>Switch back cannot happen if downtime > noSwitchBackDowntimeDelay (in seconds)</td>
+ * </tr>
  * </table>
  */
 @JsonTypeName("dcAwareFailoverRoundRobin")
@@ -39,6 +49,8 @@ public class DCAwareFailoverRoundRobinPolicyFactory implements
 	private String localDC;
 	private String backupDC;
 	private Integer hostDownSwitchThreshold;
+	private Float switchBackDelayFactor;
+	private Integer noSwitchBackDowntimeDelay;
 
 	@JsonProperty
 	public String getLocalDC() {
@@ -69,10 +81,26 @@ public class DCAwareFailoverRoundRobinPolicyFactory implements
 	public void setHostDownSwitchThreshold(Integer hostDownSwitchThreshold) {
 		this.hostDownSwitchThreshold = hostDownSwitchThreshold;
 	}
+	
+	@JsonProperty
+	public void setSwitchBackDelayFactor(Float switchBackDelayFactor) {
+		this.switchBackDelayFactor = switchBackDelayFactor;
+	}
+
+	@JsonProperty
+	public void setNoSwitchBackDowntimeDelay(Integer noSwitchBackDowntimeDelay) {
+		this.noSwitchBackDowntimeDelay = noSwitchBackDowntimeDelay;
+	}
 
 	public LoadBalancingPolicy build() {
+		if(switchBackDelayFactor==null){
+			setSwitchBackDelayFactor((float)0);
+		}
+		if(noSwitchBackDowntimeDelay==null){
+			setNoSwitchBackDowntimeDelay(0);
+		}
 		return new DCAwareFailoverRoundRobinPolicy(localDC, backupDC,
-				hostDownSwitchThreshold);
+				hostDownSwitchThreshold, switchBackDelayFactor, noSwitchBackDowntimeDelay);
 	}
 
 }
