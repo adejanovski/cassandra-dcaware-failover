@@ -56,5 +56,9 @@ loadBalancingPolicy:
       hostDownSwitchThreshold: 2
 ```
 
+### Build status
+
+[![Build Status](https://travis-ci.org/adejanovski/cassandra-dcaware-failover.svg)](https://travis-ci.org/adejanovski/cassandra-dcaware-failover)
+
 			         
 			         
