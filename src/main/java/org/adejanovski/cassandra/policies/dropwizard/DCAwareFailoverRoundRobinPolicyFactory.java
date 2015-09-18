@@ -92,13 +92,7 @@ public class DCAwareFailoverRoundRobinPolicyFactory implements
 		this.noSwitchBackDowntimeDelay = noSwitchBackDowntimeDelay;
 	}
 
-	public LoadBalancingPolicy build() {
-		if(switchBackDelayFactor==null){
-			setSwitchBackDelayFactor((float)0);
-		}
-		if(noSwitchBackDowntimeDelay==null){
-			setNoSwitchBackDowntimeDelay(0);
-		}
+	public LoadBalancingPolicy build() {		
 		return new DCAwareFailoverRoundRobinPolicy(localDC, backupDC,
 				hostDownSwitchThreshold, switchBackDelayFactor, noSwitchBackDowntimeDelay);
 	}
