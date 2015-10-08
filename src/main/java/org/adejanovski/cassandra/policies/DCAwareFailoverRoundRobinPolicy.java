@@ -22,6 +22,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.google.common.base.Joiner;
@@ -83,8 +84,8 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	 * Current value of the switch threshold. if {@code hostDownSwitchThreshold}
 	 * <= 0 then we must switch.
 	 */
-	private int hostDownSwitchThreshold;
-
+	private AtomicInteger hostDownSwitchThreshold = new AtomicInteger();
+	
 	/**
 	 * Initial value of the switch threshold
 	 */
@@ -93,8 +94,8 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	/**
 	 * flag to test if the switch as occurred
 	 */
-	private boolean switchedToBackupDc = false;
-
+	private AtomicBoolean switchedToBackupDc = new AtomicBoolean(false);
+	
 	/**
 	 * Time at which the switch occurred
 	 */
@@ -150,7 +151,7 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 		this.backupDc = backupDc == null ? UNSET : backupDc;
 		this.usedHostsPerRemoteDc = 0;
 		this.dontHopForLocalCL = true;
-		this.hostDownSwitchThreshold = hostDownSwitchThreshold;
+		this.hostDownSwitchThreshold = new AtomicInteger(hostDownSwitchThreshold);
 		this.initHostDownSwitchThreshold = hostDownSwitchThreshold;
 		this.switchBackDelayFactor = switchBackDelayFactor;
 		this.noSwitchBackDowntimeDelay = noSwitchBackDowntimeDelay;
@@ -228,7 +229,6 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	 */
 	public HostDistance distance(Host host) {
 		String dc = dc(host);
-
 		// If the connection has switched to the backup DC and fulfills
 		// the requirement for a back switch, make it happen.
 		if(!switchBackCanNeverHappen){
@@ -271,7 +271,7 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 			final Statement statement) {
 		String currentDc = localDc;
 
-		if (switchedToBackupDc) {
+		if (switchedToBackupDc.get()) {
 			currentDc = backupDc;
 		}
 
@@ -351,11 +351,14 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 		logger.debug("node {} is up", host.getAddress()
 				.toString());
 		if (dc.equals(localDc)
-				&& this.hostDownSwitchThreshold < this.initHostDownSwitchThreshold) {
+				&& this.hostDownSwitchThreshold.get() < this.initHostDownSwitchThreshold
+				) {
 			// if a node comes backup in the local DC and we're not already
 			// equal to the initial threshold, add one node to the
 			// switch threshold
-			this.hostDownSwitchThreshold++;
+
+			// This can only happen if the switch didn't occur yet
+			this.hostDownSwitchThreshold.incrementAndGet();
 			updateLocalDcStatus();
 		}
 		// If the localDC was in "auto-discover" mode and it's the first host
@@ -384,20 +387,20 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	}
 
 	public void onDown(Host host) {
-		if (dc(host).equals(localDc)) {
+		int currentHostDownCount = this.hostDownSwitchThreshold.get();
+		if (dc(host).equals(localDc) && !switchedToBackupDc.get()) {
 			// if a node goes down in the local DC remove one node to eventually
 			// trigger the one way switch
-			logger.debug("node {} is down", host.getAddress().toString());
-			this.hostDownSwitchThreshold--;
+			currentHostDownCount = this.hostDownSwitchThreshold.decrementAndGet();
 		}
 		CopyOnWriteArrayList<Host> dcHosts = perDcLiveHosts.get(dc(host));
 		if (dcHosts != null)
 			dcHosts.remove(host);
 
-		if (this.hostDownSwitchThreshold <= 0) {
+		if (this.hostDownSwitchThreshold.get() <= 0) {
 			// Make sure localDc is not considered as being up
 			localDcCameBackUpAt = null;
-			if (!switchedToBackupDc) {
+			if (!switchedToBackupDc.get()) {
 				// if we lost as many nodes in the local dc as configured in the
 				// threshold, switch to backup DC
 				switchToBackup();
@@ -421,7 +424,7 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	 * Perform switch to backup DC
 	 */
 	private void switchToBackup() {
-		switchedToBackupDc = true;
+		switchedToBackupDc.set(true);
 		switchedToBackupDcAt = new Date();
 		logger.warn(
 				"Lost {} nodes in data-center '{}'. Switching to data-center '{}'",
@@ -433,7 +436,7 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	 * Perform switch back to local DC
 	 */
 	private void switchBackToLocal() {
-		switchedToBackupDc = false;
+		switchedToBackupDc.set(false);
 		switchedToBackupDcAt = null;
 		localDcCameBackUpAt = null;
 		logger.warn(
@@ -455,17 +458,15 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	private boolean canSwitchBack() {
 		Date currentTime = new Date();
 		if ((localDcCameBackUpAt.getTime() - switchedToBackupDcAt.getTime()) < noSwitchBackDowntimeDelay * 1000) {
-			if (switchedToBackupDc && isLocalDcBackUp()) {
+			if (switchedToBackupDc.get() && isLocalDcBackUp()) {
 				logger.debug(
 						"Local DC {} is up and has been down for {}s. Switch back will happen after {}s. Uptime = {}s ",
 						localDc,
-						(int) ((localDcCameBackUpAt.getTime() - switchedToBackupDcAt
-								.getTime()) / 1000),
-						(int) ((localDcCameBackUpAt.getTime() - switchedToBackupDcAt
-								.getTime()) * switchBackDelayFactor / 1000),
+						(int) ((localDcCameBackUpAt.getTime() - switchedToBackupDcAt.getTime()) / 1000),
+						(int) ((localDcCameBackUpAt.getTime() - switchedToBackupDcAt.getTime()) * switchBackDelayFactor / 1000),
 						(currentTime.getTime() - localDcCameBackUpAt.getTime()) / 1000);
 				
-				return (hostDownSwitchThreshold > 0)
+				return (hostDownSwitchThreshold.get() > 0)
 						&& ((currentTime.getTime() - localDcCameBackUpAt
 								.getTime()) > (localDcCameBackUpAt.getTime() - switchedToBackupDcAt
 								.getTime()) * switchBackDelayFactor)
@@ -479,10 +480,11 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 		}
 
 		return false;
+
 	}
 
 	private void updateLocalDcStatus() {
-		if (switchedToBackupDc && hostDownSwitchThreshold > 0
+		if (switchedToBackupDc.get() && hostDownSwitchThreshold.get() > 0
 				&& localDcCameBackUpAt == null) {
 			localDcCameBackUpAt = new Date();
 		}
@@ -494,7 +496,7 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	 * @return
 	 */
 	private boolean isLocalDcBackUp() {
-		return hostDownSwitchThreshold > 0 && localDcCameBackUpAt != null;
+		return hostDownSwitchThreshold.get() > 0 && localDcCameBackUpAt != null;
 	}
 
 	/**
@@ -505,15 +507,15 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	 * @return
 	 */
 	private boolean isLocal(String dc) {
-		return dc == UNSET || (dc.equals(localDc) && !switchedToBackupDc)
-				|| (dc.equals(backupDc) && switchedToBackupDc);
+		return dc == UNSET || (dc.equals(localDc) && !switchedToBackupDc.get())
+				|| (dc.equals(backupDc) && switchedToBackupDc.get());
 	}
 
 	/**
 	 * Check if a switch as occurred and switching back to local DC is possible.
 	 */
 	public void triggerBackSwitchIfNecessary() {
-		if (switchedToBackupDc && localDcCameBackUpAt!=null && switchedToBackupDcAt!=null) {
+		if (switchedToBackupDc.get() && localDcCameBackUpAt!=null && switchedToBackupDcAt!=null) {
 			if (canSwitchBack()) {
 				switchBackToLocal();
 			}
