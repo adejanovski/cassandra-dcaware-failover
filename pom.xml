@@ -4,7 +4,7 @@
 
 	<groupId>org.adejanovski.cassandra.policies</groupId>
 	<artifactId>dcaware-failover-policy</artifactId>
-	<version>0.1</version>
+	<version>0.2-SNAPSHOT</version>
 	<packaging>jar</packaging>
 
 	<name>DCAwareFailoverRoundRobinPolicy</name>
@@ -50,4 +50,36 @@
 			</resource>
 		</resources>
 	</build>
+	
+	<distributionManagement>
+      <repository>
+        <id>chronopost-internal</id>
+	    <url>http://lyn4e101.tlt:57951/nexus/content/repositories/releases/</url>
+      </repository>
+      <snapshotRepository>
+        <id>chronopost-internal-snapshots</id>
+	    <url>http://lyn4e101.tlt:57951/nexus/content/repositories/snapshots/</url>
+      </snapshotRepository>
+    </distributionManagement>
+    <repositories>
+	  <repository>
+	  	<id>chronopost-internal-snapshots</id>
+	  	<url>http://lyn4e101.tlt:57951/nexus/content/repositories/snapshots/</url>
+	  	<snapshots>
+	  		<enabled>true</enabled>
+	  		<updatePolicy>always</updatePolicy>
+	  	</snapshots>
+	  </repository>
+	  <repository>
+	  	<id>chronopost-internal</id>
+	  	<url>http://lyn4e101.tlt:57951/nexus/content/repositories/releases/</url>
+	  	<releases>
+	  		<enabled>true</enabled>
+	  		<updatePolicy>always</updatePolicy>
+	  	</releases>
+	  	<snapshots>
+	  		<enabled>false</enabled>
+	  	</snapshots>			
+	  </repository>			
+    </repositories>
 </project>
