@@ -267,10 +267,8 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 			currentDc = backupDc;
 		}
 
-		CopyOnWriteArrayList<Host> localLiveHosts = perDcLiveHosts
-				.get(currentDc);
-		final List<Host> hosts = localLiveHosts == null ? Collections
-				.<Host> emptyList() : cloneList(localLiveHosts);
+		CopyOnWriteArrayList<Host> localLiveHosts = perDcLiveHosts.get(currentDc);
+		final List<Host> hosts = localLiveHosts == null ? Collections.<Host> emptyList() : cloneList(localLiveHosts);
 		final int startIdx = index.getAndIncrement();
 
 		return new AbstractIterator<Host>() {
@@ -304,16 +302,15 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 						return currentDcHosts.get(c);
 					}
 
-					ConsistencyLevel cl = statement.getConsistencyLevel() == null ? configuration
-							.getQueryOptions().getConsistencyLevel()
+					ConsistencyLevel cl = statement.getConsistencyLevel() == null 
+							? configuration.getQueryOptions().getConsistencyLevel()
 							: statement.getConsistencyLevel();
 
 					if (dontHopForLocalCL && cl.isDCLocal())
 						return endOfData();
 
 					if (remoteDcs == null) {
-						Set<String> copy = new HashSet<String>(
-								perDcLiveHosts.keySet());
+						Set<String> copy = new HashSet<String>(perDcLiveHosts.keySet());
 						copy.remove(localDc);
 						remoteDcs = copy.iterator();
 					}
@@ -322,13 +319,11 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 						break;
 
 					String nextRemoteDc = remoteDcs.next();
-					CopyOnWriteArrayList<Host> nextDcHosts = perDcLiveHosts
-							.get(nextRemoteDc);
+					CopyOnWriteArrayList<Host> nextDcHosts = perDcLiveHosts.get(nextRemoteDc);
 					if (nextDcHosts != null) {
 						// Clone for thread safety
 						List<Host> dcHosts = cloneList(nextDcHosts);
-						currentDcHosts = dcHosts.subList(0,
-								Math.min(dcHosts.size(), usedHostsPerRemoteDc));
+						currentDcHosts = dcHosts.subList(0, Math.min(dcHosts.size(), usedHostsPerRemoteDc));
 						currentDcRemaining = currentDcHosts.size();
 					}
 				}
@@ -361,8 +356,7 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 
 		CopyOnWriteArrayList<Host> dcHosts = perDcLiveHosts.get(dc);
 		if (dcHosts == null) {
-			CopyOnWriteArrayList<Host> newMap = new CopyOnWriteArrayList<Host>(
-					Collections.singletonList(host));
+			CopyOnWriteArrayList<Host> newMap = new CopyOnWriteArrayList<Host>(Collections.singletonList(host));
 			dcHosts = perDcLiveHosts.putIfAbsent(dc, newMap);
 			// If we've successfully put our new host, we're good, otherwise
 			// we've been beaten so continue
@@ -409,11 +403,10 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	private void switchToBackup(){
 		switchedToBackupDc.set(true);
 		switchedToBackupDcAt = new Date();
-		logger.warn(
+		logger.error(
 				"Lost {} nodes in data-center '{}'. Permanently switching to data-center '{}'",
 				this.initHostDownSwitchThreshold, this.localDc,
-				this.backupDc);
-		System.out.println(this.initHostDownSwitchThreshold + " noeud perdus dans le data-center '" + this.localDc + "'. Switch permanent vers le data-center '" + this.backupDc + "'");
+				this.backupDc);		
 		
 	}
 }
