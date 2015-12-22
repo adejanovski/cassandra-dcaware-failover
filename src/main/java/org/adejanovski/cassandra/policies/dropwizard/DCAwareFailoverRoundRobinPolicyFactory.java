@@ -12,7 +12,6 @@ import com.datastax.driver.core.policies.LoadBalancingPolicy;
 /**
  * A factory for configuring and building
  * {@link com.datastax.driver.core.policies.DCAwareRoundRobinPolicy} instances.
- * <p/>
  * <b>Configuration Parameters:</b>
  * <table>
  * <tr>
@@ -33,12 +32,12 @@ import com.datastax.driver.core.policies.LoadBalancingPolicy;
  * <tr>
  * <td>switchBackDelayFactor</td>
  * <td>0</td>
- * <td>The connection can switch back if uptime >= downtime*switchBackDelayFactor (gives time for hinted handoff to complete)</td>
+ * <td>The connection can switch back if uptime &gt;= downtime*switchBackDelayFactor (gives time for hinted handoff to complete)</td>
  * </tr>
  * <tr>
  * <td>noSwitchBackDowntimeDelay</td>
  * <td>0</td>
- * <td>Switch back cannot happen if downtime > noSwitchBackDowntimeDelay (in seconds)</td>
+ * <td>Switch back cannot happen if downtime &gt; noSwitchBackDowntimeDelay (in seconds)</td>
  * </tr>
  * </table>
  */

@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.google.common.base.Joiner;
+import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.AbstractIterator;
@@ -45,24 +46,32 @@ import com.datastax.driver.core.policies.LoadBalancingPolicy;
 /**
  * A data-center aware Round-robin load balancing policy with DC failover
  * support.
- * <p>
+ *
  * This policy provides round-robin queries over the node of the local data
  * center. It also includes in the query plans returned a configurable number of
  * hosts in the remote data centers, but those are always tried after the local
  * nodes. In other words, this policy guarantees that no host in a remote data
  * center will be queried unless no host in the local data center can be
  * reached.
- * <p>
+ *
  * If used with a single data center, this policy is equivalent to the
- * {@code LoadBalancingPolicy.RoundRobin} policy, but its DC awareness incurs a
- * slight overhead so the {@code LoadBalancingPolicy.RoundRobin} policy could be
+ * RoundRobinPolicy, but its DC awareness incurs a
+ * slight overhead so the RoundRobinPolicy could be
  * preferred to this policy in that case.
- * <p>
+ *
  * On top of the DCAwareRoundRobinPolicy, this policy uses a one way switch in
  * case a defined number of nodes are down in the local DC. As stated, the
  * policy never switches back to the local DC in order to prevent
  * inconsistencies and give ops teams the ability to repair the local DC before
  * switching back manually.
+ */
+/**
+ * @author adejanovski
+ *
+ */
+/**
+ * @author adejanovski
+ *
  */
 public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 		CloseableLoadBalancingPolicy {
@@ -70,19 +79,26 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	private static final Logger logger = LoggerFactory
 			.getLogger(DCAwareFailoverRoundRobinPolicy.class);
 
+	/**
+     * Returns a builder to create a new instance.
+     *
+     * @return the builder.
+     */
+    public static Builder builder() {
+        return new Builder();
+    }
+	
 	private final String UNSET = "";
 
 	private final ConcurrentMap<String, CopyOnWriteArrayList<Host>> perDcLiveHosts = new ConcurrentHashMap<String, CopyOnWriteArrayList<Host>>();
 	private final AtomicInteger index = new AtomicInteger();
 
-	@VisibleForTesting
 	volatile String localDc;
-	@VisibleForTesting
 	volatile String backupDc;
 
 	/**
 	 * Current value of the switch threshold. if {@code hostDownSwitchThreshold}
-	 * <= 0 then we must switch.
+	 * is lower than 0 then we must switch.
 	 */
 	private AtomicInteger hostDownSwitchThreshold = new AtomicInteger();
 	
@@ -102,8 +118,7 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	private Date switchedToBackupDcAt;
 
 	/**
-	 * Automatically switching back to local DC is possible after : downtime*
-	 * {@code switchBackDelayFactor}
+	 * Automatically switching back to local DC is possible after : downtime*{@code switchBackDelayFactor}
 	 */
 	private Float switchBackDelayFactor=(float)1000;
 
@@ -126,9 +141,10 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	 * triggered automatically if local DC loses more than
 	 * {@code hostDownSwitchThreshold} nodes. Switching back to local DC after
 	 * going to backup will never happen automatically.
-	 * <p>
+	 * @param localDc the local datacenter
+	 * @param backupDc the backup datacenter
+	 * @param hostDownSwitchThreshold how many nodes have to be down before switching
 	 */
-
 	public DCAwareFailoverRoundRobinPolicy(String localDc, String backupDc,
 			int hostDownSwitchThreshold) {
 
@@ -141,9 +157,17 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	 * local data-center and a backup data-center. Switching to the backup DC is
 	 * triggered automatically if local DC loses more than
 	 * {@code hostDownSwitchThreshold} nodes.
-	 * <p>
+	 * The policy will switch back to the local DC if conditions are fulfilled : 
+	 * - Downtime lasted less than noSwitchBackDowntimeDelay (hint window)
+	 * - uptime since downtime happened is superior to downtime*switchBackDelayFactor (give
+	 * 	 enough time for hints to be executed)
+	 * 
+	 * @param localDc the local datacenter
+	 * @param backupDc the backup datacenter
+	 * @param hostDownSwitchThreshold how many nodes have to be down before switching
+	 * @param switchBackDelayFactor uptime since downtime happened is superior to downtime*switchBackDelayFactor
+	 * @param noSwitchBackDowntimeDelay maximum downtime to authorize a back switch to local DC
 	 */
-
 	public DCAwareFailoverRoundRobinPolicy(String localDc, String backupDc,
 			int hostDownSwitchThreshold, float switchBackDelayFactor,
 			int noSwitchBackDowntimeDelay) {
@@ -171,12 +195,12 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 		for (Host host : hosts) {
 			String dc = dc(host);
 
-			logger.info("node {} is in dc {}", host.getAddress().toString(), dc);
+			logger.trace("node {} is in dc {}", host.getAddress().toString(), dc);
 			// If the localDC was in "auto-discover" mode and it's the first
 			// host for which we have a DC, use it.
 			if (localDc == UNSET && dc != UNSET) {
 				logger.info(
-						"Using data-center name '{}' for DCAwareRoundRobinPolicy (if this is incorrect, please provide the correct datacenter name with DCAwareRoundRobinPolicy constructor)",
+						"Using data-center name '{}' for DCAwareFailoverRoundRobinPolicy (if this is incorrect, please provide the correct datacenter name with DCAwareFailoverRoundRobinPolicy constructor)",
 						dc);
 				localDc = dc;
 			} else if (!dc.equals(localDc) && !dc.equals(backupDc))
@@ -215,13 +239,13 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 
 	/**
 	 * Return the HostDistance for the provided host.
-	 * <p>
+	 * 
 	 * This policy consider nodes in the local datacenter as {@code LOCAL}. For
 	 * each remote datacenter, it considers a configurable number of hosts as
 	 * {@code REMOTE} and the rest is {@code IGNORED}.
-	 * <p>
+	 * 
 	 * To configure how many host in each remote datacenter is considered
-	 * {@code REMOTE}, see {@link #DCAwareRoundRobinPolicy(String, int)}.
+	 * {@code REMOTE}.
 	 *
 	 * @param host
 	 *            the host of which to return the distance of.
@@ -235,25 +259,22 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 			triggerBackSwitchIfNecessary();
 		}
 
-		if (isLocal(dc)) {
+		if (isLocal(dc)) {			
 			return HostDistance.LOCAL;
 		}
 
-
-		CopyOnWriteArrayList<Host> dcHosts = perDcLiveHosts.get(dc);
-		if (dcHosts == null || usedHostsPerRemoteDc == 0)
-			return HostDistance.IGNORED;
-
-		// We need to clone, otherwise our subList call is not thread safe
-		dcHosts = cloneList(dcHosts);
-		return dcHosts.subList(0,
-				Math.min(dcHosts.size(), usedHostsPerRemoteDc)).contains(host) ? HostDistance.REMOTE
-				: HostDistance.IGNORED;
+		// Only hosts in local DC and backup DC can be considered remote
+		if(dc(host).equals(localDc) || dc(host).equals(backupDc))
+			return HostDistance.REMOTE;
+		
+		// All other hosts are ignored
+		return HostDistance.IGNORED;
+		
 	}
 
 	/**
 	 * Returns the hosts to use for a new query.
-	 * <p>
+	 * 
 	 * The returned plan will always try each known host in the local datacenter
 	 * first, and then, if none of the local host is reachable, will try up to a
 	 * configurable number of other host per remote datacenter. The order of the
@@ -270,11 +291,14 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	public Iterator<Host> newQueryPlan(String loggedKeyspace,
 			final Statement statement) {
 		String currentDc = localDc;
+		if(!switchBackCanNeverHappen){
+			triggerBackSwitchIfNecessary();
+		}
 
 		if (switchedToBackupDc.get()) {
 			currentDc = backupDc;
 		}
-
+		
 		CopyOnWriteArrayList<Host> localLiveHosts = perDcLiveHosts
 				.get(currentDc);
 		final List<Host> hosts = localLiveHosts == null ? Collections
@@ -292,54 +316,16 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 			private int currentDcRemaining;
 
 			@Override
-			protected Host computeNext() {
-				while (true) {
-					if (remainingLocal > 0) {
-						remainingLocal--;
-						int c = idx++ % hosts.size();
-						if (c < 0) {
-							c += hosts.size();
-						}
-						return hosts.get(c);
-					}
-
-					if (currentDcHosts != null && currentDcRemaining > 0) {
-						currentDcRemaining--;
-						int c = idx++ % currentDcHosts.size();
-						if (c < 0) {
-							c += currentDcHosts.size();
-						}
-						return currentDcHosts.get(c);
-					}
-
-					ConsistencyLevel cl = statement.getConsistencyLevel() == null ? configuration
-							.getQueryOptions().getConsistencyLevel()
-							: statement.getConsistencyLevel();
-
-					if (dontHopForLocalCL && cl.isDCLocal())
-						return endOfData();
-
-					if (remoteDcs == null) {
-						Set<String> copy = new HashSet<String>(
-								perDcLiveHosts.keySet());
-						copy.remove(localDc);
-						remoteDcs = copy.iterator();
-					}
-
-					if (!remoteDcs.hasNext())
-						break;
-
-					String nextRemoteDc = remoteDcs.next();
-					CopyOnWriteArrayList<Host> nextDcHosts = perDcLiveHosts
-							.get(nextRemoteDc);
-					if (nextDcHosts != null) {
-						// Clone for thread safety
-						List<Host> dcHosts = cloneList(nextDcHosts);
-						currentDcHosts = dcHosts.subList(0,
-								Math.min(dcHosts.size(), usedHostsPerRemoteDc));
-						currentDcRemaining = currentDcHosts.size();
-					}
+			protected Host computeNext() {				
+				if (remainingLocal > 0) {
+					remainingLocal--;					
+					int c = idx++ % hosts.size();
+					if (c < 0) {
+						c += hosts.size();
+					}					
+					return hosts.get(c);
 				}
+									
 				return endOfData();
 			}
 		};
@@ -347,16 +333,12 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 
 	public void onUp(Host host) {
 
-		String dc = dc(host);
-		logger.debug("node {} is up", host.getAddress()
-				.toString());
-		if (dc.equals(localDc)
-				&& this.hostDownSwitchThreshold.get() < this.initHostDownSwitchThreshold
+		String dc = dc(host);		
+		if (dc.equals(localDc) && this.hostDownSwitchThreshold.get() < this.initHostDownSwitchThreshold
 				) {
 			// if a node comes backup in the local DC and we're not already
 			// equal to the initial threshold, add one node to the
 			// switch threshold
-
 			// This can only happen if the switch didn't occur yet
 			this.hostDownSwitchThreshold.incrementAndGet();
 			updateLocalDcStatus();
@@ -386,12 +368,11 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	public void onSuspected(Host host) {
 	}
 
-	public void onDown(Host host) {
-		int currentHostDownCount = this.hostDownSwitchThreshold.get();
+	public void onDown(Host host) {		
 		if (dc(host).equals(localDc) && !switchedToBackupDc.get()) {
 			// if a node goes down in the local DC remove one node to eventually
-			// trigger the one way switch
-			currentHostDownCount = this.hostDownSwitchThreshold.decrementAndGet();
+			// trigger the switch
+			this.hostDownSwitchThreshold.decrementAndGet();
 		}
 		CopyOnWriteArrayList<Host> dcHosts = perDcLiveHosts.get(dc(host));
 		if (dcHosts != null)
@@ -456,42 +437,58 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	 * @return
 	 */
 	private boolean canSwitchBack() {
-		Date currentTime = new Date();
+		
 		if ((localDcCameBackUpAt.getTime() - switchedToBackupDcAt.getTime()) < noSwitchBackDowntimeDelay * 1000) {
 			if (switchedToBackupDc.get() && isLocalDcBackUp()) {
 				logger.debug(
 						"Local DC {} is up and has been down for {}s. Switch back will happen after {}s. Uptime = {}s ",
 						localDc,
-						(int) ((localDcCameBackUpAt.getTime() - switchedToBackupDcAt.getTime()) / 1000),
-						(int) ((localDcCameBackUpAt.getTime() - switchedToBackupDcAt.getTime()) * switchBackDelayFactor / 1000),
-						(currentTime.getTime() - localDcCameBackUpAt.getTime()) / 1000);
+						(int) (getDowntimeDuration() / 1000),
+						(int) (getDowntimeDuration() * switchBackDelayFactor / 1000),
+						(getUptimeDuration()) / 1000);
 				
 				return (hostDownSwitchThreshold.get() > 0)
-						&& ((currentTime.getTime() - localDcCameBackUpAt
-								.getTime()) > (localDcCameBackUpAt.getTime() - switchedToBackupDcAt
-								.getTime()) * switchBackDelayFactor)
-						&& (localDcCameBackUpAt.getTime() - switchedToBackupDcAt
-								.getTime()) < noSwitchBackDowntimeDelay * 1000;
+						&& (getUptimeDuration() > getDowntimeDuration() * switchBackDelayFactor)
+						&& getDowntimeDuration() < noSwitchBackDowntimeDelay * 1000;
 			}
 		}else{
 			// Downtime lasted more than the hinted handoff window
 			// Switching back is now a manual operation
+			logger.warn(
+					"Local DC has been down for too long. Switch back will never happen.");
 			switchBackCanNeverHappen=true;
 		}
 
 		return false;
 
 	}
+	
+	/**
+	 * returns the duration of the local DC downtime.
+	 * @return
+	 */
+	private long getDowntimeDuration(){
+		return localDcCameBackUpAt.getTime() - switchedToBackupDcAt.getTime();
+	}
+	
+	/**
+	 * get the uptime duration of local DC after outage.
+	 * @return
+	 */
+	private long getUptimeDuration(){		
+		return new Date().getTime() - localDcCameBackUpAt.getTime();
+	}
+	
+	
 
 	private void updateLocalDcStatus() {
-		if (switchedToBackupDc.get() && hostDownSwitchThreshold.get() > 0
-				&& localDcCameBackUpAt == null) {
+		if (switchedToBackupDc.get() && hostDownSwitchThreshold.get() > 0 && localDcCameBackUpAt == null) {
 			localDcCameBackUpAt = new Date();
 		}
 	}
 
 	/**
-	 * Test if local DC has enough nodes to be considered to be back up
+	 * Test if local DC has enough nodes to be considered alive
 	 * 
 	 * @return
 	 */
@@ -521,5 +518,105 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 			}
 		}
 	}
+	
+	
+	/**
+     * Helper class to build the policy.
+     */
+    public static class Builder {
+        private String localDc;
+        private String backupDc;        
+        private int hostDownSwitchThreshold;
+        private Float switchBackDelayFactor=(float)1000;
+    	private int noSwitchBackDowntimeDelay=0;
+
+        /**
+         * Sets the name of the datacenter that will be considered "local" by the policy.
+         * 
+         * This must be the name as known by Cassandra (in other words, the name in that appears in
+         * {@code system.peers}, or in the output of admin tools like nodetool).
+         * 
+         * If this method isn't called, the policy will default to the datacenter of the first node
+         * connected to. This will always be ok if all the contact points use at {@code Cluster}
+         * creation are in the local data-center. Otherwise, you should provide the name yourself
+         * with this method.
+         *
+         * @param localDc the name of the datacenter. It should not be {@code null}.
+         * @return this builder.
+         */
+        public Builder withLocalDc(String localDc) {
+            Preconditions.checkArgument(!Strings.isNullOrEmpty(localDc),
+                "localDc name can't be null or empty. If you want to let the policy autodetect the datacenter, don't call Builder.withLocalDC");
+            this.localDc = localDc;
+            return this;
+        }
+        
+        /**
+         * Sets the name of the datacenter that will be considered as "backup" by the policy.
+         * <p>
+         * This must be the name as known by Cassandra (in other words, the name in that appears in
+         * {@code system.peers}, or in the output of admin tools like nodetool).
+         * <p>
+         * If this method must be called, otherwise you should not use this policy.
+         *
+         * @param backupDc the name of the datacenter. It should not be {@code null}.
+         * @return this builder.
+         */
+        public Builder withBackupDc(String backupDc) {
+            Preconditions.checkArgument(!Strings.isNullOrEmpty(localDc),
+                "backupDc name can't be null or empty.");
+            this.backupDc = backupDc;
+            return this;
+        }
+
+        
+        /**
+         * Sets how many nodes must be down in the local DC before switching to backup.  
+         * 
+         * @param hostDownSwitchThreshold the number of nodes down before switching to the backup DC.
+         * @return this builder
+         */
+        public Builder withHostDownSwitchThreshold(int hostDownSwitchThreshold) {
+            this.hostDownSwitchThreshold = hostDownSwitchThreshold;
+            return this;
+        }
+        
+        /**
+         * Mandatory if you want to authorize switching back to local DC after downtime. 
+         * Allows enough time to pass so that hinted handoff can finish 
+         * (currentTime - localDcCameBackUpAt) &gt; (localDcCameBackUpAt - switchedToBackupDcAt)*switchBackDelayFactor 
+         * 
+         * @param switchBackDelayFactor times downtime has to be &lt;= uptime before switching back to local DC 
+         * @return this builder
+         */
+        public Builder withSwitchBackDelayFactor(float switchBackDelayFactor) {
+            this.switchBackDelayFactor = switchBackDelayFactor;
+            return this;
+        }
+        
+        /**
+         * Mandatory if you want to authorize switching back to local DC after downtime.
+         * Prevents switching back to local DC if downtime was longer than the provided value.
+         * Used to check if downtime didn't last more than the hinted handoff window (which requires repair).
+         * 
+         * @param noSwitchBackDowntimeDelay max time in seconds before switching back to local DC will be prevented.
+         * @return this builder
+         */
+        public Builder withNoSwitchBackDowntimeDelay(int noSwitchBackDowntimeDelay) {
+            this.noSwitchBackDowntimeDelay = noSwitchBackDowntimeDelay;
+            return this;
+        }
+        
+        
+
+        /**
+         * Builds the policy configured by this builder.
+         *
+         * @return the policy.
+         */
+        public DCAwareFailoverRoundRobinPolicy build() {
+            return new DCAwareFailoverRoundRobinPolicy(localDc, backupDc, hostDownSwitchThreshold, switchBackDelayFactor, noSwitchBackDowntimeDelay);
+        }
+    }
 
 }
