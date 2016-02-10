@@ -1,55 +1,56 @@
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-	<modelVersion>4.0.0</modelVersion>
+<!--
 
-	<groupId>org.adejanovski.cassandra.policies</groupId>
-	<artifactId>dcaware-failover-policy</artifactId>
-	<version>0.2-SNAPSHOT</version>
-	<packaging>jar</packaging>
+         Copyright (C) 2012-2015 DataStax Inc.
 
-	<name>DCAwareFailoverRoundRobinPolicy</name>
-	<url>http://maven.apache.org</url>
+      Licensed under the Apache License, Version 2.0 (the "License");
+      you may not use this file except in compliance with the License.
+      You may obtain a copy of the License at
 
-	<properties>
-		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-	</properties>
+         http://www.apache.org/licenses/LICENSE-2.0
 
-	<dependencies>
-		<dependency>
-			<groupId>org.stuartgunter</groupId>
-			<artifactId>dropwizard-cassandra</artifactId>
-			<version>1.1-dw0.8-cs2.1</version>
-		</dependency>
+      Unless required by applicable law or agreed to in writing, software
+      distributed under the License is distributed on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+      See the License for the specific language governing permissions and
+      limitations under the License.
 
-		<dependency>
-			<groupId>org.testng</groupId>
-			<artifactId>testng</artifactId>
-			<version>6.1.1</version>
-			<scope>test</scope>
-			<exclusions>
-				<exclusion>
-					<artifactId>snakeyaml</artifactId>
-					<groupId>org.yaml</groupId>
-				</exclusion>
-			</exclusions>
-		</dependency>
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+  <modelVersion>4.0.0</modelVersion>
 
-		<dependency>
-			<groupId>org.mockito</groupId>
-			<artifactId>mockito-all</artifactId>
-			<version>1.10.8</version>
-			<scope>test</scope>
-		</dependency>
+  <groupId>com.github.adejanovski.cassandra.policies</groupId>
+  <artifactId>dcaware-failover-policy-parent</artifactId> 
+  <version>1.1.0</version>
+  <packaging>pom</packaging>
+  <name>DCAwareFailoverRoundRobinPolicy</name>
+  <description>DC Aware Failover Round Robin Policy for Datastax Java Driver</description>
 
-	</dependencies>
 
-	<build>
-		<resources>
-			<resource>
-				<directory>META-INF/services</directory>
-			</resource>
-		</resources>
-	</build>
-	
-	
+  <modules>
+    <module>DCAwareFailoverRoundRobinPolicy</module>
+    <module>DCAwareFailoverDropwizard</module>    
+  </modules>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <java.version>1.7</java.version>    
+  </properties>
+
+  <build>
+    <plugins>
+      <plugin>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.1</version>
+        <configuration>
+          <source>${java.version}</source>
+          <target>${java.version}</target>
+          <optimize>true</optimize>
+          <showDeprecation>true</showDeprecation>
+          <showWarnings>true</showWarnings>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+    
+
 </project>
