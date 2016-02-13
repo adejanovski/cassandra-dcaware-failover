@@ -8,8 +8,6 @@
 		<version>1.1.0</version>
 	</parent>
 
-
-	<groupId>com.github.adejanovski.cassandra.policies</groupId>
 	<artifactId>dcaware-failover-policy-dropwizard</artifactId>
 	<packaging>jar</packaging>
 
@@ -28,6 +26,12 @@
 			<groupId>com.github.adejanovski.cassandra.policies</groupId>
 			<artifactId>dcaware-failover-policy</artifactId> 
 			<version>${project.parent.version}</version>
+			<exclusions>				
+				<exclusion>
+					<artifactId>metrics-core</artifactId>
+					<groupId>com.codahale.metrics</groupId>
+				</exclusion>
+			</exclusions>
 		</dependency>
 
 		<dependency>
@@ -296,31 +300,7 @@
 							<showWarnings>true</showWarnings>
 							<showDeprecation>true</showDeprecation>
 						</configuration>
-					</plugin>
-					<plugin>
-						<artifactId>maven-shade-plugin</artifactId>
-						<version>2.3</version>
-						<executions>
-							<execution>
-								<phase>package</phase>
-								<goals>
-									<goal>shade</goal>
-								</goals>
-								<configuration>
-									<relocations>
-										<relocation>
-											<pattern>io.netty</pattern>
-											<shadedPattern>com.datastax.shaded.netty</shadedPattern>
-										</relocation>
-									</relocations>
-									<transformers>
-										<transformer
-											implementation="org.apache.maven.plugins.shade.resource.ComponentsXmlResourceTransformer" />
-									</transformers>
-								</configuration>
-							</execution>
-						</executions>
-					</plugin>
+					</plugin>					
 					<plugin>
 						<groupId>org.apache.maven.plugins</groupId>
 						<artifactId>maven-javadoc-plugin</artifactId>
@@ -431,7 +411,5 @@
 		<url>https://github.com/com:adejanovski/cassandra-dcaware-failover</url>
 		<tag>HEAD</tag>
 	</scm>
-		
-
 
 </project>
