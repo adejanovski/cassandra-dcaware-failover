@@ -16,6 +16,7 @@
 package org.adejanovski.cassandra.policies;
 
 import java.util.*;
+import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -24,6 +25,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
+import java.util.function.IntUnaryOperator;
 
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
@@ -39,7 +42,11 @@ import com.datastax.driver.core.Configuration;
 import com.datastax.driver.core.ConsistencyLevel;
 import com.datastax.driver.core.Host;
 import com.datastax.driver.core.HostDistance;
+import com.datastax.driver.core.KeyspaceMetadata;
+import com.datastax.driver.core.Metadata;
 import com.datastax.driver.core.Statement;
+import com.datastax.driver.core.Token;
+import com.datastax.driver.core.TokenRange;
 import com.datastax.driver.core.policies.CloseableLoadBalancingPolicy;
 import com.datastax.driver.core.policies.LoadBalancingPolicy;
 
@@ -90,23 +97,28 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	
 	private final String UNSET = "";
 
+	private volatile Object lock = new Object();
+	
 	private final ConcurrentMap<String, CopyOnWriteArrayList<Host>> perDcLiveHosts = new ConcurrentHashMap<String, CopyOnWriteArrayList<Host>>();
+	/**
+	 * Map that holds the lost token ranges per keyspace.
+	 * In order to use a simple map, the key is composed of [DC]-[Keyspace]-[Starting token of range]-[Ending token of range]
+	 */
+	private volatile ConcurrentMap<String, Integer> lostTokenRanges = new ConcurrentHashMap<String, Integer>();
+	private volatile ConcurrentMap<String, Integer> maxLostTokenRangesPerKeyspace = new ConcurrentHashMap<String, Integer>();
 	private final AtomicInteger index = new AtomicInteger();
+	private final AtomicInteger maxNumberOfLostReplicasForAToken = new AtomicInteger(0);
+	
+	private Metadata clusterMetadata;
 
 	volatile String localDc;
 	volatile String backupDc;
 
 	/**
-	 * Current value of the switch threshold. if {@code hostDownSwitchThreshold}
-	 * is lower than 0 then we must switch.
+	 * Number of replicas lost for a token that trigger switching to the backup DC.
 	 */
-	private AtomicInteger hostDownSwitchThreshold = new AtomicInteger();
-	
-	/**
-	 * Initial value of the switch threshold
-	 */
-	private final int initHostDownSwitchThreshold;
-
+	private Integer tokenReplicaLostSwitchThreshold;
+		
 	/**
 	 * flag to test if the switch as occurred
 	 */
@@ -144,9 +156,9 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	 * @param hostDownSwitchThreshold how many nodes have to be down before switching
 	 */
 	public DCAwareFailoverRoundRobinPolicy(String localDc, String backupDc,
-			int hostDownSwitchThreshold) {
+			int tokenReplicaLostSwitchThreshold) {
 
-		this(localDc, backupDc, hostDownSwitchThreshold, (float) -1.0, 0);
+		this(localDc, backupDc, tokenReplicaLostSwitchThreshold, (float) -1.0, 0);
 
 	}
 
@@ -167,18 +179,17 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	 * @param noSwitchBackDowntimeDelay maximum downtime to authorize a back switch to local DC
 	 */
 	public DCAwareFailoverRoundRobinPolicy(String localDc, String backupDc,
-			int hostDownSwitchThreshold, float switchBackDelayFactor,
+			int tokenReplicaLostSwitchThreshold, float switchBackDelayFactor,
 			int noSwitchBackDowntimeDelay) {
 		this.localDc = localDc == null ? UNSET : localDc;
 		this.backupDc = backupDc == null ? UNSET : backupDc;
-		this.hostDownSwitchThreshold = new AtomicInteger(hostDownSwitchThreshold);
-		this.initHostDownSwitchThreshold = hostDownSwitchThreshold;
+		this.tokenReplicaLostSwitchThreshold = new Integer(tokenReplicaLostSwitchThreshold);		
 		this.switchBackDelayFactor = switchBackDelayFactor;
 		this.noSwitchBackDowntimeDelay = noSwitchBackDowntimeDelay;
-
 	}
 
 	public void init(Cluster cluster, Collection<Host> hosts) {
+		clusterMetadata = cluster.getMetadata();
 		if (localDc != UNSET)
 			logger.info(
 					"Using provided data-center name '{}' for DCAwareFailoverRoundRobinPolicy",
@@ -190,6 +201,7 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 
 		for (Host host : hosts) {
 			String dc = dc(host);
+			
 
 			logger.trace("node {} is in dc {}", host.getAddress().toString(), dc);
 			// If the localDC was in "auto-discover" mode and it's the first
@@ -327,15 +339,14 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	}
 
 	public void onUp(Host host) {
-
+		updateLostTokensOnNodeUp(host);
 		String dc = dc(host);		
-		if (dc.equals(localDc) && this.hostDownSwitchThreshold.get() < this.initHostDownSwitchThreshold
+		if (dc.equals(localDc) // && computeMaxTokenReplicasLost() >= this.tokenReplicaLostSwitchThreshold
 				) {
 			// if a node comes backup in the local DC and we're not already
 			// equal to the initial threshold, add one node to the
 			// switch threshold
-			// This can only happen if the switch didn't occur yet
-			this.hostDownSwitchThreshold.incrementAndGet();
+			// This can only happen if the switch didn't occur yet			
 			updateLocalDcStatus();
 		}
 		// If the localDC was in "auto-discover" mode and it's the first host
@@ -363,16 +374,13 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	}
 
 	public void onDown(Host host) {		
-		if (dc(host).equals(localDc) && !switchedToBackupDc.get()) {
-			// if a node goes down in the local DC remove one node to eventually
-			// trigger the switch
-			this.hostDownSwitchThreshold.decrementAndGet();
-		}
+		int maxLost = updateLostTokensOnNodeDown(host);
+		
 		CopyOnWriteArrayList<Host> dcHosts = perDcLiveHosts.get(dc(host));
 		if (dcHosts != null)
 			dcHosts.remove(host);
 
-		if (this.hostDownSwitchThreshold.get() <= 0) {
+		if (maxLost >= this.tokenReplicaLostSwitchThreshold) {
 			// Make sure localDc is not considered as being up
 			localDcCameBackUpAt = null;
 			if (!switchedToBackupDc.get()) {
@@ -402,8 +410,8 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 		switchedToBackupDc.set(true);
 		switchedToBackupDcAt = new Date();
 		logger.warn(
-				"Lost {} nodes in data-center '{}'. Switching to data-center '{}'",
-				this.initHostDownSwitchThreshold, this.localDc, this.backupDc);
+				"Lost more than {} replicas for some tokens in data-center '{}'. Switching to data-center '{}'",
+				this.tokenReplicaLostSwitchThreshold, this.localDc, this.backupDc);
 
 	}
 
@@ -440,7 +448,7 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 						(int) (getDowntimeDuration() * switchBackDelayFactor / 1000),
 						(getUptimeDuration()) / 1000);
 				
-				return (hostDownSwitchThreshold.get() > 0)
+				return (getMaxTokenReplicasLost() < this.tokenReplicaLostSwitchThreshold)
 						&& (getUptimeDuration() > getDowntimeDuration() * switchBackDelayFactor)
 						&& getDowntimeDuration() < noSwitchBackDowntimeDelay * 1000;
 			}
@@ -475,8 +483,10 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	
 
 	private void updateLocalDcStatus() {
-		if (switchedToBackupDc.get() && hostDownSwitchThreshold.get() > 0 && localDcCameBackUpAt == null) {
+		logger.info("updateLocalDcStatus() >> switchedToBackupDc.get() {} && getMaxTokenReplicasLost() {} < this.tokenReplicaLostSwitchThreshold {} && localDcCameBackUpAt {}" , switchedToBackupDc.get(), getMaxTokenReplicasLost(), this.tokenReplicaLostSwitchThreshold, localDcCameBackUpAt);
+		if (switchedToBackupDc.get() && getMaxTokenReplicasLost() < this.tokenReplicaLostSwitchThreshold && localDcCameBackUpAt == null) {
 			localDcCameBackUpAt = new Date();
+			logger.info("local DC just came back up");
 		}
 	}
 
@@ -486,7 +496,8 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	 * @return
 	 */
 	private boolean isLocalDcBackUp() {
-		return hostDownSwitchThreshold.get() > 0 && localDcCameBackUpAt != null;
+		logger.info("getMaxTokenReplicasLost() {} <= this.tokenReplicaLostSwitchThreshold {} && localDcCameBackUpAt {}" , getMaxTokenReplicasLost(), this.tokenReplicaLostSwitchThreshold, localDcCameBackUpAt);
+		return getMaxTokenReplicasLost() <= this.tokenReplicaLostSwitchThreshold && localDcCameBackUpAt != null;
 	}
 
 	/**
@@ -514,12 +525,108 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	
 	
 	/**
+     * Update the map of lost tokens when a node goes down.
+     * 
+     * @param host     
+     * @return the max number of replicas lost for a token range
+     */
+    public int updateLostTokensOnNodeDown(Host host){
+    	synchronized (lock) {
+					
+	    	logger.info("host {} is down and has those tokens {}", host.getAddress(), new TreeSet<Token>(host.getTokens()));    	
+	    	
+	    	for(KeyspaceMetadata keyspace:clusterMetadata.getKeyspaces()){
+	    		if(!keyspace.getName().startsWith("system")){
+		    		int maxLost = 0;
+		    		Set<TokenRange> rangesForKeyspace = clusterMetadata.getTokenRanges(keyspace.getName(), host);    				    			    	
+		    		for(TokenRange tokenRange:rangesForKeyspace){
+		    			lostTokenRanges.putIfAbsent(host.getDatacenter() + "-" + keyspace.getName() + "-" + tokenRange.getStart().toString() + "-" + tokenRange.getEnd().toString(), 0);
+		    			int newValue = lostTokenRanges.get(host.getDatacenter() + "-" + keyspace.getName() + "-" + tokenRange.getStart().toString() + "-" + tokenRange.getEnd().toString());
+		    			newValue++;
+		    			lostTokenRanges.put(host.getDatacenter() + "-" + keyspace.getName() + "-" + tokenRange.getStart().toString() + "-" + tokenRange.getEnd().toString(), newValue);
+		    			//logger.info(host.toString() + " has lost " + newValue + " on token range " + keyspace.getName() + " " + tokenRange.getStart().toString());
+		    			maxLost = Math.max(maxLost, newValue);    					    			
+		    		}
+		    		
+		    		maxLostTokenRangesPerKeyspace.put(host.getDatacenter() + "-" + keyspace.getName(), maxLost);
+	    		}
+	    		    		
+	    	}
+	    	
+	    	
+			return computeMaxTokenReplicasLost();
+    	}
+    }    
+    
+    /**
+     * Update the map of lost tokens when a node comes up.
+     * 
+     * @param host
+     */
+    public int updateLostTokensOnNodeUp(Host host){
+    	synchronized (lock) {
+	    	logger.info(host.toString() + " is up");
+	    	for(KeyspaceMetadata keyspace:clusterMetadata.getKeyspaces()){
+	    		if(!keyspace.getName().startsWith("system")){
+	    			int maxLost = 0;
+		    		Set<TokenRange> rangesForKeyspace = clusterMetadata.getTokenRanges(keyspace.getName(), host);		    				    	
+		    		for(TokenRange tokenRange:rangesForKeyspace){
+		    			Integer added = lostTokenRanges.putIfAbsent(host.getDatacenter() + "-" + keyspace.getName() + "-" + tokenRange.getStart().toString() + "-" + tokenRange.getEnd().toString(), 0);
+		    			
+		    			// the map already existed so we need to decrement the value if it is superior to 0
+		    			int newValue = lostTokenRanges.get(host.getDatacenter() + "-" + keyspace.getName() + "-" + tokenRange.getStart().toString() + "-" + tokenRange.getEnd().toString());
+		    			if(newValue>0)
+		    				newValue--;
+		    			
+		    			maxLost = Math.max(maxLost, newValue);    					    			
+		    			lostTokenRanges.put(host.getDatacenter() + "-" + keyspace.getName() + "-" + tokenRange.getStart().toString() + "-" + tokenRange.getEnd().toString(), newValue);		    			
+		    		}
+		    		
+		    		maxLostTokenRangesPerKeyspace.put(host.getDatacenter() + "-" + keyspace.getName(), maxLost);
+	    		}
+	    		    		
+	    	}
+	    	
+	    	return computeMaxTokenReplicasLost();
+    	}
+    }
+    
+    /**
+     * Update the map of lost tokens when a node comes up.
+     * 
+     * @param host
+     */
+    public int getMaxTokenReplicasLost(){    	
+		return this.maxNumberOfLostReplicasForAToken.get();
+    }
+    
+    /**
+     * Update the map of lost tokens when a node comes up.
+     * 
+     * @param host
+     */
+    public int computeMaxTokenReplicasLost(){
+    	int maxLost = 0;
+		for(Entry<String, Integer> lostTokensValue:maxLostTokenRangesPerKeyspace.entrySet()){
+			maxLost = Math.max(maxLost, lostTokensValue.getValue());
+			logger.info("Max lost for ks {} is {} ", lostTokensValue.getKey() , maxLost);
+		}
+		
+		this.maxNumberOfLostReplicasForAToken.set(maxLost);
+		logger.info("Max lost overall is " + maxLost);
+		return maxLost;
+    }
+    
+    
+	
+	
+	/**
      * Helper class to build the policy.
      */
     public static class Builder {
         private String localDc;
         private String backupDc;        
-        private int hostDownSwitchThreshold;
+        private int tokenReplicaLostSwitchThreshold;
         private Float switchBackDelayFactor=(float)1000;
     	private int noSwitchBackDowntimeDelay=0;
 
@@ -564,13 +671,13 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 
         
         /**
-         * Sets how many nodes must be down in the local DC before switching to backup.  
+         * Sets how many replicas must be lost for a token range in the local DC before switching to backup.  
          * 
-         * @param hostDownSwitchThreshold the number of nodes down before switching to the backup DC.
+         * @param tokenReplicaLostSwitchThreshold the number of nodes down before switching to the backup DC.
          * @return this builder
          */
-        public Builder withHostDownSwitchThreshold(int hostDownSwitchThreshold) {
-            this.hostDownSwitchThreshold = hostDownSwitchThreshold;
+        public Builder withTokenReplicaLostSwitchThreshold(int tokenReplicaLostSwitchThreshold) {
+            this.tokenReplicaLostSwitchThreshold = tokenReplicaLostSwitchThreshold;
             return this;
         }
         
@@ -608,8 +715,11 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
          * @return the policy.
          */
         public DCAwareFailoverRoundRobinPolicy build() {
-            return new DCAwareFailoverRoundRobinPolicy(localDc, backupDc, hostDownSwitchThreshold, switchBackDelayFactor, noSwitchBackDowntimeDelay);
+            return new DCAwareFailoverRoundRobinPolicy(localDc, backupDc, tokenReplicaLostSwitchThreshold, switchBackDelayFactor, noSwitchBackDowntimeDelay);
         }
+        
+        
+        
     }
 
 }

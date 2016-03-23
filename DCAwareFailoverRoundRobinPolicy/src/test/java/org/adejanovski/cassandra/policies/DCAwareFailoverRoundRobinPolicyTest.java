@@ -59,7 +59,7 @@ public class DCAwareFailoverRoundRobinPolicyTest {
 		}
 	}
 	
-	@Test
+	//@Test
 	public void testLostOneNode() throws UnknownHostException{
 		int i=0;		
 		for(Host host:hosts){
@@ -80,7 +80,7 @@ public class DCAwareFailoverRoundRobinPolicyTest {
 	}
 	
 	
-	@Test
+	//@Test
 	public void testLostTwoNodes() throws UnknownHostException{
 		int i=0;		
 		
@@ -105,7 +105,7 @@ public class DCAwareFailoverRoundRobinPolicyTest {
 		}
 	}
 	
-	@Test
+	//@Test
 	public void testSwitchBackProtection() throws UnknownHostException{
 		int i=0;		
 		

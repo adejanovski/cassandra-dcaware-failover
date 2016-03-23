@@ -47,7 +47,7 @@ public class DCAwareFailoverRoundRobinPolicyFactory implements
 
 	private String localDC;
 	private String backupDC;
-	private Integer hostDownSwitchThreshold;
+	private Integer tokenReplicaLostSwitchThreshold;
 	private Float switchBackDelayFactor;
 	private Integer noSwitchBackDowntimeDelay;
 
@@ -72,13 +72,13 @@ public class DCAwareFailoverRoundRobinPolicyFactory implements
 	}
 
 	@JsonProperty
-	public Integer getHostDownSwitchThreshold() {
-		return hostDownSwitchThreshold;
+	public Integer getTokenReplicaLostSwitchThreshold() {
+		return tokenReplicaLostSwitchThreshold;
 	}
 
 	@JsonProperty
-	public void setHostDownSwitchThreshold(Integer hostDownSwitchThreshold) {
-		this.hostDownSwitchThreshold = hostDownSwitchThreshold;
+	public void setTokenReplicaLostSwitchThreshold(Integer tokenReplicaLostSwitchThreshold) {
+		this.tokenReplicaLostSwitchThreshold = tokenReplicaLostSwitchThreshold;
 	}
 	
 	@JsonProperty
@@ -93,7 +93,7 @@ public class DCAwareFailoverRoundRobinPolicyFactory implements
 
 	public LoadBalancingPolicy build() {		
 		return new DCAwareFailoverRoundRobinPolicy(localDC, backupDC,
-				hostDownSwitchThreshold, switchBackDelayFactor, noSwitchBackDowntimeDelay);
+				tokenReplicaLostSwitchThreshold, switchBackDelayFactor, noSwitchBackDowntimeDelay);
 	}
 
 }
