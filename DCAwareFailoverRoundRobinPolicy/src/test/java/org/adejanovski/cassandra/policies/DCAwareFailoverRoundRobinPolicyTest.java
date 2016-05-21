@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 
 import org.adejanovski.cassandra.policies.DCAwareFailoverRoundRobinPolicy;
+import org.adejanovski.cassandra.policies.DCAwareFailoverRoundRobinPolicy.InvalidConsistencyLevelException;
 import org.mockito.Mockito;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.BeforeMethod;
@@ -14,6 +15,7 @@ import org.testng.annotations.Test;
 import static org.testng.Assert.*;
 
 import com.datastax.driver.core.Cluster;
+import com.datastax.driver.core.ConsistencyLevel;
 import com.datastax.driver.core.Host;
 import com.datastax.driver.core.HostDistance;
 
@@ -23,9 +25,9 @@ public class DCAwareFailoverRoundRobinPolicyTest {
 	Cluster cluster;
 
 	@BeforeMethod
-	public void setUp() throws UnknownHostException {
+	public void setUp() throws UnknownHostException, InvalidConsistencyLevelException {
 		hosts = new ArrayList<Host>();
-		policy = new DCAwareFailoverRoundRobinPolicy("dc1", "dc2", 2);
+		policy = new DCAwareFailoverRoundRobinPolicy("dc1", "dc2", ConsistencyLevel.LOCAL_QUORUM);
 		for(int i=0;i<6;i++){
 			Host host = Mockito.mock(Host.class);
 			InetAddress address = InetAddress.getByName("127.0.0." + i);
