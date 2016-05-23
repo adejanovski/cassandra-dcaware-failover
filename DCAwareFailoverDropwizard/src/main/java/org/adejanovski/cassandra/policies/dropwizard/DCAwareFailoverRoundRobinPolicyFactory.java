@@ -1,8 +1,10 @@
 package org.adejanovski.cassandra.policies.dropwizard;
 
 import org.adejanovski.cassandra.policies.DCAwareFailoverRoundRobinPolicy;
+import org.adejanovski.cassandra.policies.DCAwareFailoverRoundRobinPolicy.InvalidConsistencyLevelException;
 import org.stuartgunter.dropwizard.cassandra.loadbalancing.*;
 
+import com.datastax.driver.core.ConsistencyLevel;
 import com.datastax.driver.core.policies.DCAwareRoundRobinPolicy;
 import com.datastax.driver.core.policies.LoadBalancingPolicy;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -30,6 +32,11 @@ import com.datastax.driver.core.policies.LoadBalancingPolicy;
  * <td>The name of the backup datacenter (as known by Cassandra).</td>
  * </tr>
  * <tr>
+ * <td>minimumAchievableConsistencyLevel</td>
+ * <td>ConsistencyLevel.LOCAL_QUORUM</td>
+ * <td>The minimum required consistency level that must be achievable. Below it, the switch is triggered.</td>
+ * </tr>
+ * <tr>
  * <td>switchBackDelayFactor</td>
  * <td>0</td>
  * <td>The connection can switch back if uptime &gt;= downtime*switchBackDelayFactor (gives time for hinted handoff to complete)</td>
@@ -47,7 +54,7 @@ public class DCAwareFailoverRoundRobinPolicyFactory implements
 
 	private String localDC;
 	private String backupDC;
-	private Integer tokenReplicaLostSwitchThreshold;
+	private ConsistencyLevel minimumAchievableConsistencyLevel;
 	private Float switchBackDelayFactor;
 	private Integer noSwitchBackDowntimeDelay;
 
@@ -72,13 +79,13 @@ public class DCAwareFailoverRoundRobinPolicyFactory implements
 	}
 
 	@JsonProperty
-	public Integer getTokenReplicaLostSwitchThreshold() {
-		return tokenReplicaLostSwitchThreshold;
+	public ConsistencyLevel getMinimumAchievableConsistencyLevel() {
+		return minimumAchievableConsistencyLevel;
 	}
 
 	@JsonProperty
-	public void setTokenReplicaLostSwitchThreshold(Integer tokenReplicaLostSwitchThreshold) {
-		this.tokenReplicaLostSwitchThreshold = tokenReplicaLostSwitchThreshold;
+	public void setMinimumAchievableConsistencyLevel(ConsistencyLevel minimumAchievableConsistencyLevel) {
+		this.minimumAchievableConsistencyLevel = minimumAchievableConsistencyLevel;
 	}
 	
 	@JsonProperty
@@ -92,8 +99,14 @@ public class DCAwareFailoverRoundRobinPolicyFactory implements
 	}
 
 	public LoadBalancingPolicy build() {		
-		return new DCAwareFailoverRoundRobinPolicy(localDC, backupDC,
-				tokenReplicaLostSwitchThreshold, switchBackDelayFactor, noSwitchBackDowntimeDelay);
+		try {
+			return new DCAwareFailoverRoundRobinPolicy(localDC, backupDC,
+						minimumAchievableConsistencyLevel, switchBackDelayFactor, noSwitchBackDowntimeDelay);
+		} catch (InvalidConsistencyLevelException e) {		
+			e.printStackTrace();
+			return null;
+		}
+		 
 	}
 
 }
