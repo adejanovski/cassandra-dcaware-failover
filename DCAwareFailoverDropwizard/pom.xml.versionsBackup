@@ -4,40 +4,50 @@
 
 	<parent>
 		<groupId>com.github.adejanovski.cassandra.policies</groupId>
-		<artifactId>dcaware-failover-policy-parent</artifactId>
-		<version>3.0.2</version>
+		<artifactId>dcaware-failover-policy-parent</artifactId> 
+		<version>3.0.1</version>
 	</parent>
 
-	<artifactId>dcaware-failover-policy</artifactId>
+	<artifactId>dcaware-failover-policy-dropwizard</artifactId>
 	<packaging>jar</packaging>
 
-	<name>DCAwareFailoverRoundRobinPolicy</name>
-	<url>http://maven.apache.org</url>
+	<name>DCAwareFailoverDropwizard</name>
+	<url>https://github.com/adejanovski/cassandra-dcaware-failover</url>
 
 	<properties>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 		<cassandra.driver.version>2.1.9</cassandra.driver.version>
+		<scassandra.version>0.10.0</scassandra.version>	
+		<dropwizard-cassandra.version>3.0.0</dropwizard-cassandra.version>
+		<dropwizard.version>0.9.2</dropwizard.version>
 	</properties>
 
 	<dependencies>
+		
+		<dependency>
+			<groupId>com.github.adejanovski.cassandra.policies</groupId>
+			<artifactId>dcaware-failover-policy</artifactId> 
+			<version>${project.parent.version}</version>			
+		</dependency>
 
 		<dependency>
-			<groupId>com.datastax.cassandra</groupId>
-			<artifactId>cassandra-driver-core</artifactId>
-			<version>${cassandra.driver.version}</version>
+			<groupId>systems.composable</groupId>
+			<artifactId>dropwizard-cassandra</artifactId>
+			<version>${dropwizard-cassandra.version}</version>		
+			<scope>provided</scope>
 		</dependency>
+		
+		<dependency>
+            <groupId>io.dropwizard</groupId>
+            <artifactId>dropwizard-core</artifactId>
+            <version>${dropwizard.version}</version>
+            <scope>provided</scope>
+        </dependency>
 
 		<dependency>
 			<groupId>org.testng</groupId>
 			<artifactId>testng</artifactId>
 			<version>6.9.4</version>
-			<scope>test</scope>
-		</dependency>
-
-		<dependency>
-			<groupId>org.mockito</groupId>
-			<artifactId>mockito-all</artifactId>
-			<version>1.10.8</version>
 			<scope>test</scope>
 		</dependency>
 
@@ -50,7 +60,7 @@
 				<directory>META-INF/services</directory>
 			</resource>
 		</resources>
-
+		
 		<pluginManagement>
 			<plugins>
 				<plugin>
@@ -191,6 +201,26 @@
 		</pluginManagement>
 		<plugins>
 			<plugin>
+				<groupId>org.apache.felix</groupId>
+				<artifactId>maven-bundle-plugin</artifactId>
+				<extensions>true</extensions>
+				<version>2.4.0</version>
+				<!-- <executions> <execution> <id>bundle-manifest</id> <phase>process-classes</phase> 
+					<goals> <goal>manifest</goal> </goals> </execution> </executions> -->
+				<configuration>
+					<instructions>
+						<Bundle-SymbolicName>com.github.adejanovski.cassandra.jdbc</Bundle-SymbolicName>
+						<Bundle-Version>${project.version}</Bundle-Version>
+						<_include>-osgi.bnd</_include>
+					</instructions>
+					<supportedProjectTypes>
+						<supportedProjectType>jar</supportedProjectType>
+						<supportedProjectType>bundle</supportedProjectType>
+						<supportedProjectType>pom</supportedProjectType>
+					</supportedProjectTypes>
+				</configuration>
+			</plugin>
+			<plugin>
 				<artifactId>maven-compiler-plugin</artifactId>
 				<configuration>
 					<source>1.6</source>
@@ -201,8 +231,13 @@
 				<artifactId>maven-surefire-plugin</artifactId>
 				<configuration>
 					<includes>
-						<include>**/*Test.class</include>
+						<include>**/*UnitTest.class</include>
 					</includes>
+					<systemPropertyVariables>
+						<cassandra.version>${cassandra.version}</cassandra.version>
+						<ipprefix>${ipprefix}</ipprefix>
+						<com.datastax.driver.NEW_NODE_DELAY_SECONDS>60</com.datastax.driver.NEW_NODE_DELAY_SECONDS>
+					</systemPropertyVariables>
 				</configuration>
 			</plugin>
 			<plugin>
@@ -211,6 +246,9 @@
 					<includes>
 						<include>**/*Test.class</include>
 					</includes>
+					<excludes>
+						<exclude>**/*UnitTest.class</exclude>
+					</excludes>
 				</configuration>
 				<executions>
 					<execution>
@@ -260,15 +298,15 @@
 							<showWarnings>true</showWarnings>
 							<showDeprecation>true</showDeprecation>
 						</configuration>
-					</plugin>
+					</plugin>					
 					<plugin>
 						<groupId>org.apache.maven.plugins</groupId>
 						<artifactId>maven-javadoc-plugin</artifactId>
 						<configuration>
-							<additionalparam>-Xdoclint:none</additionalparam>
-						</configuration>
+					      <additionalparam>-Xdoclint:none</additionalparam>
+					    </configuration>
 						<version>2.10.3</version>
-					</plugin>
+					</plugin>					
 
 				</plugins>
 			</build>
@@ -312,8 +350,8 @@
 						<artifactId>maven-javadoc-plugin</artifactId>
 						<version>2.10.3</version>
 						<configuration>
-							<additionalparam>-Xdoclint:none</additionalparam>
-						</configuration>
+					      <additionalparam>-Xdoclint:none</additionalparam>
+					    </configuration>
 					</plugin>
 					<plugin>
 						<groupId>org.apache.maven.plugins</groupId>
@@ -358,7 +396,7 @@
 					<plugin>
 						<groupId>org.apache.maven.plugins</groupId>
 						<artifactId>maven-surefire-plugin</artifactId>
-						<version>2.18.1</version>
+						<version>2.18.1</version>						
 					</plugin>
 				</plugins>
 			</build>

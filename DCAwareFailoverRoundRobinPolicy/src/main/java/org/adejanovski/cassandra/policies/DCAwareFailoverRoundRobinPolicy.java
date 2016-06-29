@@ -47,7 +47,6 @@ import com.datastax.driver.core.Metadata;
 import com.datastax.driver.core.Statement;
 import com.datastax.driver.core.Token;
 import com.datastax.driver.core.TokenRange;
-import com.datastax.driver.core.policies.CloseableLoadBalancingPolicy;
 import com.datastax.driver.core.policies.LoadBalancingPolicy;
 
 /**
@@ -56,21 +55,20 @@ import com.datastax.driver.core.policies.LoadBalancingPolicy;
  *
  * This policy provides round-robin queries over the node of the local data
  * center. It also includes in the query plans returned a configurable number of
- * hosts in the remote data centers, but those are always tried after the local
- * nodes. In other words, this policy guarantees that no host in a remote data
- * center will be queried unless no host in the local data center can be
- * reached.
+ * hosts in the remote data centers. 
  *
  * If used with a single data center, this policy is equivalent to the
  * RoundRobinPolicy, but its DC awareness incurs a
  * slight overhead so the RoundRobinPolicy could be
  * preferred to this policy in that case.
  *
- * On top of the DCAwareRoundRobinPolicy, this policy uses a one way switch in
- * case a defined number of nodes are down in the local DC. As stated, the
- * policy never switches back to the local DC in order to prevent
- * inconsistencies and give ops teams the ability to repair the local DC before
- * switching back manually.
+ * Built on top of the DCAwareRoundRobinPolicy, this policy provides a switch
+ * to a backup DC in case the local DC cannot achieve the minimum required consistency. 
+ * Switching back to the local DC can occur only after a minimum time which depends on
+ * how long local DC was "down".
+ * Switching back to local DC gets prohibited once downtime exceeds the configurable hint window
+ * to prevent inconsistencies.
+ *  
  */
 /**
  * @author adejanovski
@@ -80,8 +78,7 @@ import com.datastax.driver.core.policies.LoadBalancingPolicy;
  * @author adejanovski
  *
  */
-public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
-		CloseableLoadBalancingPolicy {
+public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy {
 
 	private static final Logger logger = LoggerFactory
 			.getLogger(DCAwareFailoverRoundRobinPolicy.class);
@@ -103,13 +100,28 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	/**
 	 * Map that holds the lost token ranges per keyspace.
 	 * In order to use a simple map, the key is composed of [DC]-[Keyspace]-[Starting token of range]-[Ending token of range]
+	 * The map values is a Set of host adresses, which contains the hosts that are down and are a replica for the affected token range.
 	 */
-	private volatile ConcurrentMap<KeyspaceTokenRange, Integer> lostTokenRanges = new ConcurrentHashMap<KeyspaceTokenRange, Integer>();
-	private volatile ConcurrentMap<KeyspaceTokenRange, ConsistencyLevel> maxAchievableConsistencyPerKeyspace = new ConcurrentHashMap<KeyspaceTokenRange, ConsistencyLevel>();
+	private volatile ConcurrentMap<KeyspaceTokenRange, Set<String>> lostTokenRanges = Maps.newConcurrentMap();
+	
+	/**
+	 * Maximum consistency level that can currently be achieved by DC and keyspace : LOCAL_ONE, LOCAL_QUORUM or ALL (here means all replicas are up in the local DC)
+	 */
+	private volatile ConcurrentMap<KeyspaceTokenRange, ConsistencyLevel> maxAchievableConsistencyPerKeyspace = Maps.newConcurrentMap();
+	
 	private volatile ConsistencyLevel minAchievableConsistencyOverall;
 	private final AtomicInteger index = new AtomicInteger();
 	private final Map<ConsistencyLevel, Integer> consistencyLevelWeight = Maps.newHashMap();
+	
+	/**
+	 * A list of callbacks that get executed when a switch occurs (either way)
+	 */
 	private List<FailoverSwitchCallback> callbacks = Lists.newArrayList();
+	
+	/**
+	 * Used in case you want to restrict switch decisions to a specific keyspace (system* KS are always excluded)
+	 */
+	private String monitoredKeyspace="";
 	
 	
 	private Metadata clusterMetadata;
@@ -148,12 +160,10 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	 * to avoid constant switches in case of transient failures
 	 * in seconds
 	 */
-	private Float minimumTimeBetweenSwitches=(float)300;
+	private Float minimumTimeBetweenSwitches=(float)120;
 
 	private Date localDcCameBackUpAt;
 	private boolean switchBackCanNeverHappen=false;
-
-	private volatile Configuration configuration;
 
 	/**
 	 * Creates a new datacenter aware failover round robin policy that uses a
@@ -163,20 +173,34 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	 * going to backup will never happen automatically.
 	 * @param localDc the local datacenter
 	 * @param backupDc the backup datacenter
-	 * @param hostDownSwitchThreshold how many nodes have to be down before switching
+	 * @param minimumRequiredConsistencyLevel what is the minimum required CL under which a switch gets triggered
 	 * @throws InvalidConsistencyLevelException 
 	 */
-	public DCAwareFailoverRoundRobinPolicy(String localDc, String backupDc,	ConsistencyLevel minimumAchievableConsistencyLevel) throws InvalidConsistencyLevelException {
+	public DCAwareFailoverRoundRobinPolicy(String localDc, String backupDc,	ConsistencyLevel minimumRequiredConsistencyLevel) throws InvalidConsistencyLevelException {
 
-		this(localDc, backupDc, minimumAchievableConsistencyLevel, (float) -1.0, 0);
+		this(localDc, backupDc, minimumRequiredConsistencyLevel, (float) -1.0, 0);
 
 	}
 	
 	public DCAwareFailoverRoundRobinPolicy(String localDc, String backupDc,
-			ConsistencyLevel minimumAchievableConsistencyLevel, float switchBackDelayFactor,
+			ConsistencyLevel minimumRequiredConsistencyLevel, float switchBackDelayFactor,
 			int noSwitchBackDowntimeDelay) throws InvalidConsistencyLevelException {
 		
-		this(localDc, backupDc, minimumAchievableConsistencyLevel, switchBackDelayFactor, noSwitchBackDowntimeDelay, null);
+		this(localDc, backupDc, minimumRequiredConsistencyLevel, switchBackDelayFactor, noSwitchBackDowntimeDelay, null);
+		
+	}
+	
+	public DCAwareFailoverRoundRobinPolicy(String localDc, String backupDc,
+			ConsistencyLevel minimumRequiredConsistencyLevel, float switchBackDelayFactor,
+			int noSwitchBackDowntimeDelay, FailoverSwitchCallback callback) throws InvalidConsistencyLevelException {
+		this(localDc, backupDc, minimumRequiredConsistencyLevel, switchBackDelayFactor, noSwitchBackDowntimeDelay, callback, "");
+	}
+	
+	
+	public DCAwareFailoverRoundRobinPolicy(String localDc, String backupDc,
+			ConsistencyLevel minimumRequiredConsistencyLevel, float switchBackDelayFactor,
+			int noSwitchBackDowntimeDelay, List<FailoverSwitchCallback> callbacks, String monitoredKeyspace) throws InvalidConsistencyLevelException {
+		this(localDc, backupDc, minimumRequiredConsistencyLevel, switchBackDelayFactor, noSwitchBackDowntimeDelay, callbacks.size()>0?callbacks.get(0):null, monitoredKeyspace);
 		
 	}
 
@@ -184,7 +208,7 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	 * Creates a new datacenter aware failover round robin policy that uses a
 	 * local data-center and a backup data-center. Switching to the backup DC is
 	 * triggered automatically if local DC cannot achieved the desired 
-	 * {@code minimumAchievableConsistencyLevel} consistency.
+	 * {@code minimumRequiredConsistencyLevel} consistency.
 	 * The policy will switch back to the local DC if conditions are fulfilled : 
 	 * - Downtime lasted less than noSwitchBackDowntimeDelay (hint window)
 	 * - uptime since downtime happened is superior to downtime*switchBackDelayFactor (give
@@ -192,33 +216,35 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	 * 
 	 * @param localDc the local datacenter
 	 * @param backupDc the backup datacenter
-	 * @param minimumAchievableConsistencyLevel the lowest acceptable consistency level below which a switch will be triggered
+	 * @param minimumRequiredConsistencyLevel the lowest acceptable consistency level below which a switch will be triggered
 	 * @param switchBackDelayFactor uptime since downtime happened is superior to downtime*switchBackDelayFactor
 	 * @param noSwitchBackDowntimeDelay maximum downtime to authorize a back switch to local DC
 	 * @param callback object that implements the FailoverSwitchCallback interface and gets called after a switch occurs (both ways)
 	 * @throws InvalidConsistencyLevelException 
 	 */
 	public DCAwareFailoverRoundRobinPolicy(String localDc, String backupDc,
-			ConsistencyLevel minimumAchievableConsistencyLevel, float switchBackDelayFactor,
-			int noSwitchBackDowntimeDelay, FailoverSwitchCallback callback) throws InvalidConsistencyLevelException {
-		
+			ConsistencyLevel minimumRequiredConsistencyLevel, float switchBackDelayFactor,
+			int noSwitchBackDowntimeDelay, FailoverSwitchCallback callback, String monitoredKeyspace) throws InvalidConsistencyLevelException {
+				
 		if(minimumRequiredConsistencyLevel != ConsistencyLevel.LOCAL_ONE && minimumRequiredConsistencyLevel != ConsistencyLevel.LOCAL_QUORUM){
     		throw new InvalidConsistencyLevelException("Minimum required CL must be any of LOCAL_ONE or LOCAL_QUORUM. Please provide one of those two.");
     	}
 		
 		this.localDc = localDc == null ? UNSET : localDc;
 		this.backupDc = backupDc == null ? UNSET : backupDc;
-		this.minimumRequiredConsistencyLevel = minimumAchievableConsistencyLevel;		
+		this.minimumRequiredConsistencyLevel = minimumRequiredConsistencyLevel;		
 		this.switchBackDelayFactor = switchBackDelayFactor;
 		this.noSwitchBackDowntimeDelay = noSwitchBackDowntimeDelay;
 		if(callback!=null){
 			this.callbacks.add(callback);
 		}
+		this.monitoredKeyspace = monitoredKeyspace;
 		
 		
 		consistencyLevelWeight.put(ConsistencyLevel.ANY, 0);
 		consistencyLevelWeight.put(ConsistencyLevel.LOCAL_ONE, 1);
 		consistencyLevelWeight.put(ConsistencyLevel.LOCAL_QUORUM, 5);
+		consistencyLevelWeight.put(ConsistencyLevel.ALL, 10);
 	}
 
 	public void init(Cluster cluster, Collection<Host> hosts) {
@@ -228,7 +254,6 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 					"Using provided data-center name '{}' for DCAwareFailoverRoundRobinPolicy",
 					localDc);
 
-		this.configuration = cluster.getConfiguration();
 
 		ArrayList<String> notInLocalDC = new ArrayList<String>();
 
@@ -350,11 +375,6 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 			private int idx = startIdx;
 			private int remainingLocal = hosts.size();
 
-			// For remote Dcs
-			private Iterator<String> remoteDcs;
-			private List<Host> currentDcHosts;
-			private int currentDcRemaining;
-
 			@Override
 			protected Host computeNext() {				
 				if (remainingLocal > 0) {
@@ -448,7 +468,7 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 				minimumRequiredConsistencyLevel.name(), this.localDc, this.backupDc);
 		for(FailoverSwitchCallback callback:callbacks){
 			try{
-				callback.switchDcCallback(backupDc, maxAchievableConsistencyPerKeyspace, lostTokenRanges, this.localDc, this.backupDc);
+				callback.switchDcCallback(backupDc, maxAchievableConsistencyPerKeyspace, lostTokenRanges, this.localDc, this.backupDc, this.switchedToBackupDcAt);
 			}catch(Exception e){
 				logger.warn("Execution of callback " + callback.getCallbackName() + "failed.", e );
 			}
@@ -466,6 +486,13 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 		logger.warn(
 				"Recovered enough nodes in data-center '{}'. Switching back since conditions are fulfilled",
 				this.localDc);
+		for(FailoverSwitchCallback callback:callbacks){
+			try{
+				callback.switchDcCallback(localDc, maxAchievableConsistencyPerKeyspace, lostTokenRanges, this.localDc, this.backupDc, this.switchedToBackupDcAt);
+			}catch(Exception e){
+				logger.warn("Execution of callback " + callback.getCallbackName() + "failed.", e );
+			}
+		}
 
 	}
 
@@ -480,18 +507,20 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 	 * @return
 	 */
 	private boolean canSwitchBack() {		
-		if ((localDcCameBackUpAt.getTime() - switchedToBackupDcAt.getTime()) < noSwitchBackDowntimeDelay * 1000) {
+		if (getDowntimeDuration() < noSwitchBackDowntimeDelay*1000) {
 			if (switchedToBackupDc.get() && isLocalDcBackUp()) {
-				logger.debug(
-						"Local DC {} is up and has been down for {}s. Switch back will happen after {}s. Uptime = {}s ",
+				logger.info(
+						"Local DC {} is up and has been down for {}s. Switch back will occur after {}s. Uptime = {}s ",
 						localDc,
 						(int) (getDowntimeDuration() / 1000),
-						(int) (getDowntimeDuration() * switchBackDelayFactor / 1000),
+						Math.max((int) (getDowntimeDuration() * switchBackDelayFactor / 1000), minimumTimeBetweenSwitches - (getDowntimeDuration()/1000)),
 						(getUptimeDuration()) / 1000);
 				
 				return (canFulfillMinimumCl())
-						&& (getUptimeDuration() > getDowntimeDuration() * switchBackDelayFactor)
-						&& getDowntimeDuration() < noSwitchBackDowntimeDelay * 1000;
+						&& (getUptimeDuration() > getDowntimeDuration() * switchBackDelayFactor) // Uptime was enough to process hints
+						&& getDowntimeDuration() < noSwitchBackDowntimeDelay * 1000 // downtime was less than the hint window
+						&& (getUptimeDuration()+getDowntimeDuration() > minimumTimeBetweenSwitches*1000) // back and forth switch protection 
+						;
 			}
 		}else{
 			// Downtime lasted more than the hinted handoff window
@@ -572,46 +601,12 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
     public ConsistencyLevel updateLostTokensOnNodeDown(Host host){
     	synchronized (lock) {
 					
-	    	logger.info("host {} is down and has those tokens {}", host.getAddress(), new TreeSet<Token>(host.getTokens()));    	
+	    	logger.debug("host {} is down and has those tokens {}", host.getAddress(), new TreeSet<Token>(host.getTokens()));    	
 	    	
-	    	for(KeyspaceMetadata keyspace:clusterMetadata.getKeyspaces()){
-	    		if(!keyspace.getName().startsWith("system")){
-		    		int maxLost = 0;
-		    		Set<TokenRange> rangesForKeyspace = clusterMetadata.getTokenRanges(keyspace.getName(), host);    				    			    	
-		    		for(TokenRange tokenRange:rangesForKeyspace){
-		    			KeyspaceTokenRange ksTokenRange = new KeyspaceTokenRange(host.getDatacenter(), keyspace.getName(), tokenRange.getStart().toString(), tokenRange.getEnd().toString());
-		    			lostTokenRanges.putIfAbsent(ksTokenRange, 0);
-		    			int newValue = lostTokenRanges.get(ksTokenRange);
-		    			newValue++;
-		    			lostTokenRanges.put(ksTokenRange, newValue);
-		    			maxLost = Math.max(maxLost, newValue);    					    			
-		    		}
-		    		
-		    		// if keyspace is using NTS and has replicas on local DC
-		    		logger.info("Keyspace {} replication = {}", keyspace.getName(), keyspace.getReplication());		    		
-		    		if(keyspace.getReplication().get("class").toLowerCase().contains("networktopologystrategy") && keyspace.getReplication().containsKey(localDc)){
-		    			
-		    			int nbReplicas = Integer.parseInt(keyspace.getReplication().get(localDc));
-		    			logger.info("Keyspace {} maxLost = {} nbReplicas = {}", keyspace.getName(), maxLost, nbReplicas);
-		    			ConsistencyLevel maxClForKeyspace = ConsistencyLevel.LOCAL_QUORUM;
-		    			int neededNodesForQuorum = (int)((float)nbReplicas/(float)2)+1;
-		    			int nodesLeft = nbReplicas-maxLost;
-		    			logger.info("Keyspace {} needed for quorum = {} nodes left = {}", keyspace.getName(), neededNodesForQuorum, nodesLeft);
-		    			if(nodesLeft == 0){
-		    				maxClForKeyspace = ConsistencyLevel.ANY;
-		    			}else if(nodesLeft < neededNodesForQuorum){
-		    				maxClForKeyspace = ConsistencyLevel.LOCAL_ONE;
-		    			}
-		    			maxAchievableConsistencyPerKeyspace.put(new KeyspaceTokenRange(host.getDatacenter(), keyspace.getName()), maxClForKeyspace);
-		    		}else{
-		    			logger.info("Oooops, pb de parsing des infos du keyspace");
-		    		}
-	    		}
-	    		    		
-	    	}
+	    	updateLostTokenRanges(host, false);
 	    	
 	    	
-	    	return computeMinAchievableClOverall();
+	    	return computeMinAchievableClOverallInLocalDC();
     	}
     }    
     
@@ -622,43 +617,10 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
      */
     public ConsistencyLevel updateLostTokensOnNodeUp(Host host){
     	synchronized (lock) {
-	    	logger.info(host.toString() + " is up");
-	    	for(KeyspaceMetadata keyspace:clusterMetadata.getKeyspaces()){
-	    		if(!keyspace.getName().startsWith("system")){
-	    			int maxLost = 0;
-		    		Set<TokenRange> rangesForKeyspace = clusterMetadata.getTokenRanges(keyspace.getName(), host);		    				    	
-		    		for(TokenRange tokenRange:rangesForKeyspace){
-		    			KeyspaceTokenRange ksTokenRange = new KeyspaceTokenRange(host.getDatacenter(), keyspace.getName(), tokenRange.getStart().toString(), tokenRange.getEnd().toString());
-		    			Integer added = lostTokenRanges.putIfAbsent(ksTokenRange, 0);
-		    			
-		    			// the map already existed so we need to decrement the value if it is superior to 0
-		    			int newValue = lostTokenRanges.get(ksTokenRange);
-		    			if(newValue>0)
-		    				newValue--;
-		    			
-		    			maxLost = Math.max(maxLost, newValue);    					    			
-		    			lostTokenRanges.put(ksTokenRange, newValue);		    			
-		    		}
-		    		
-		    		// if keyspace is using NTS and has replicas on local DC
-		    		if(keyspace.getReplication().get("class").toLowerCase().contains("networktopologystrategy") && keyspace.getReplication().containsKey(localDc)){
-		    			int nbReplicas = Integer.parseInt(keyspace.getReplication().get(localDc));
-		    			ConsistencyLevel maxClForKeyspace = ConsistencyLevel.LOCAL_QUORUM;		    			
-		    			int neededNodesForQuorum = (int)((float)nbReplicas/(float)2)+1;
-		    			int nodesLeft = nbReplicas-maxLost;
-		    			logger.info("Keyspace {} needed for quorum = {} nodes left = {}", keyspace.getName(), neededNodesForQuorum, nodesLeft);
-		    			if(nodesLeft == 0){
-		    				maxClForKeyspace = ConsistencyLevel.ANY;
-		    			}else if(nodesLeft < neededNodesForQuorum){
-		    				maxClForKeyspace = ConsistencyLevel.LOCAL_ONE;
-		    			}
-		    			maxAchievableConsistencyPerKeyspace.put(new KeyspaceTokenRange(host.getDatacenter(), keyspace.getName()), maxClForKeyspace);
-		    		}
-	    		}
-	    		    		
-	    	}
+	    	logger.debug(host.toString() + " is up");
+	    	updateLostTokenRanges(host, true);
 	    	
-	    	return computeMinAchievableClOverall();
+	    	return computeMinAchievableClOverallInLocalDC();
     	}
     }
     
@@ -668,16 +630,16 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
      * 
      * @param host
      */
-    public ConsistencyLevel computeMinAchievableClOverall(){
+    public ConsistencyLevel computeMinAchievableClOverallInLocalDC(){
     	ConsistencyLevel minCl = ConsistencyLevel.LOCAL_QUORUM;
 		for(Entry<KeyspaceTokenRange, ConsistencyLevel> keyspaceTokenRangeMaxCl:maxAchievableConsistencyPerKeyspace.entrySet()){			
-			if(consistencyLevelWeight.get(keyspaceTokenRangeMaxCl.getValue()) < consistencyLevelWeight.get(minCl)){
+			if(keyspaceTokenRangeMaxCl.getKey().getDatacenter().equals(this.localDc) && consistencyLevelWeight.get(keyspaceTokenRangeMaxCl.getValue()) < consistencyLevelWeight.get(minCl)){
 				minCl = keyspaceTokenRangeMaxCl.getValue();
 			}
 		}
 		
 		this.minAchievableConsistencyOverall = minCl;
-		logger.info("Min achievable CL overall is " + minCl.name());
+		logger.debug("Min achievable CL overall is " + minCl.name());
 		return minCl;
     }
     
@@ -685,6 +647,87 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
     	return consistencyLevelWeight.get(minAchievableConsistencyOverall) >= consistencyLevelWeight.get(minimumRequiredConsistencyLevel);
     }
     
+    
+    /**
+     * Checks if the keyspace has to be monitored by the policy to trigger failover switch.
+     * Returns true if so.
+     * 
+     * @param keyspaceMetadata
+     * @return
+     */
+    public Boolean keyspaceHasToBeMonitored(KeyspaceMetadata keyspaceMetadata){
+    	return !keyspaceMetadata.getName().startsWith("system")
+    				&& (this.monitoredKeyspace.equals("") || keyspaceMetadata.getName().equals(this.monitoredKeyspace));
+    }
+    
+    
+    /**
+     * Triggered if a node changes availability state (up or down).
+     * Computes replicas available for each token range on the monitored keyspaces.  
+     * 
+     * @param host
+     * @param isUp
+     */
+    public void updateLostTokenRanges(Host host, Boolean isUp){
+    	for(KeyspaceMetadata keyspace:clusterMetadata.getKeyspaces()){
+    		if(keyspaceHasToBeMonitored(keyspace)){    			
+    			if(keyspace.getReplication().get("class").toLowerCase().contains("networktopologystrategy") && keyspace.getReplication().containsKey(localDc)){
+		    		// if keyspace is using NTS and has replicas on local DC		    				    	
+    				int nbReplicas = 0;
+	    			nbReplicas = Integer.parseInt(keyspace.getReplication().get(localDc));    			
+    			
+		    		int maxLost = 0;
+		    		Set<TokenRange> rangesForKeyspace = clusterMetadata.getTokenRanges(keyspace.getName(), host);
+		    		for(TokenRange tokenRange:rangesForKeyspace){
+			    		if(isUp){			    		
+			    			KeyspaceTokenRange ksTokenRange = new KeyspaceTokenRange(host.getDatacenter(), keyspace.getName(), tokenRange.getStart().toString(), tokenRange.getEnd().toString());
+			    			lostTokenRanges.putIfAbsent(ksTokenRange, new HashSet<String>());
+			    			
+			    			// the map already existed so we need to decrement the value if it is superior to 0			    			
+			    			Set<String> nodesDown = lostTokenRanges.get(ksTokenRange);
+			    			nodesDown.remove(host.getAddress().toString());
+			    			lostTokenRanges.put(ksTokenRange, nodesDown);			    			
+			    			maxLost = Math.max(maxLost, nodesDown.size());    					    			
+			    			
+				    	}		    		
+			    		else {
+			    			KeyspaceTokenRange ksTokenRange = new KeyspaceTokenRange(host.getDatacenter(), keyspace.getName(), tokenRange.getStart().toString(), tokenRange.getEnd().toString());
+			    			lostTokenRanges.putIfAbsent(ksTokenRange,  new HashSet<String>());
+			    			Set<String> nodesDown = lostTokenRanges.get(ksTokenRange);
+			    			nodesDown.add(host.getAddress().toString());			    			
+			    			lostTokenRanges.put(ksTokenRange, nodesDown);
+			    			maxLost = Math.max(maxLost, nodesDown.size());
+			    		}
+		    		
+		    			logger.debug("Keyspace {} maxLost = {} nbReplicas = {}", keyspace.getName(), maxLost, nbReplicas);
+		    			ConsistencyLevel maxClForKeyspace = ConsistencyLevel.LOCAL_QUORUM;
+		    			int neededNodesForQuorum = (int)((float)nbReplicas/(float)2)+1;
+		    			int nodesLeft = nbReplicas-maxLost;
+		    			logger.debug("Keyspace {} needed for quorum = {} nodes left = {}", keyspace.getName(), neededNodesForQuorum, nodesLeft);
+		    			if(maxLost == 0){
+		    				maxClForKeyspace = ConsistencyLevel.ALL;
+		    			} else if(nodesLeft == 0){
+		    				maxClForKeyspace = ConsistencyLevel.ANY;
+		    			} else if(nodesLeft < neededNodesForQuorum){
+		    				maxClForKeyspace = ConsistencyLevel.LOCAL_ONE;
+		    			}
+		    			maxAchievableConsistencyPerKeyspace.put(new KeyspaceTokenRange(host.getDatacenter(), keyspace.getName()), maxClForKeyspace);
+			    	}
+	    		}
+    		}
+    		    		
+    	}
+    }
+    
+    
+    /**
+     * Add a failover switch callback to the policy.
+     * 
+     * @param callback
+     */
+    public void addCallback(FailoverSwitchCallback callback){
+    	this.callbacks.add(callback);
+    }
     
 	
 	
@@ -698,6 +741,7 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
         private Float switchBackDelayFactor=(float)1000;
     	private int noSwitchBackDowntimeDelay=0;
     	private List<FailoverSwitchCallback> callbacks = Lists.newArrayList();
+    	private String monitoredKeyspace="";
 
         /**
          * Sets the name of the datacenter that will be considered "local" by the policy.
@@ -777,9 +821,27 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
             return this;
         }
         
+        /**
+         * Adds a callback which is called in case a switch occurs (one way or the other).
+         * 
+         * @param callback
+         * @return
+         */
         public Builder withFailoverSwitchCallback(FailoverSwitchCallback callback) {
             this.callbacks.add(callback);
             return this;
+        }
+        
+        /**
+         * Enables monitoring a single keyspace and ignore others for failover switch.
+         * Useful when you have different RF for your KS.
+         * 
+         * @param monitoredKeyspace
+         * @return
+         */
+        public Builder withMonitoredKeyspace(String monitoredKeyspace){
+        	this.monitoredKeyspace = monitoredKeyspace;
+        	return this;
         }
         
         
@@ -791,7 +853,16 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
          * @throws InvalidConsistencyLevelException 
          */
         public DCAwareFailoverRoundRobinPolicy build() throws InvalidConsistencyLevelException {
-            return new DCAwareFailoverRoundRobinPolicy(localDc, backupDc, minimumRequiredConsistencyLevel, switchBackDelayFactor, noSwitchBackDowntimeDelay);
+        	DCAwareFailoverRoundRobinPolicy policy = new DCAwareFailoverRoundRobinPolicy(localDc, backupDc, minimumRequiredConsistencyLevel, switchBackDelayFactor, noSwitchBackDowntimeDelay, callbacks, monitoredKeyspace);
+        	
+        	// the policy constructors allow only a single callback to be registered
+        	// so we loop after getting the policy instance and add subsequent callbacks.
+        	if(callbacks.size()>1){
+        		for(int i=1;i<callbacks.size();i++){
+        			policy.addCallback(callbacks.get(i));
+        		}
+        	}
+            return policy; 
         }
         
         
@@ -866,7 +937,12 @@ public class DCAwareFailoverRoundRobinPolicy implements LoadBalancingPolicy,
 		}
 
 		public String toString() {
-			return datacenter.toString() + "-" + this.keyspace + "-" + this.startToken + "-" + this.endToken;
+			if(!this.startToken.equals("")){
+				return datacenter.toString() + "-" + this.keyspace + "-" + this.startToken + "-" + this.endToken;
+			} 
+			else{
+				return datacenter.toString() + "-" + this.keyspace;
+			}
 		}    	
     	
     }
